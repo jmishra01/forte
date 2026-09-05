@@ -20,9 +20,10 @@ export const notesApi = {
     invoke<Note>("create_note", { title, parentId: parentId ?? null }),
   update: (id: string, title: string, content: string) =>
     invoke<NoteMeta>("update_note", { id, title, content }),
+  rename: (id: string, title: string) => invoke<NoteMeta>("rename_note", { id, title }),
   setTags: (id: string, tags: string[]) => invoke<NoteMeta>("set_note_tags", { id, tags }),
-  setParent: (id: string, parentId: string | null) =>
-    invoke<NoteMeta>("set_note_parent", { id, parentId }),
+  setParent: (id: string, parentId: string | null, position?: number | null) =>
+    invoke<NoteMeta>("set_note_parent", { id, parentId, position: position ?? null }),
   linkPdf: (noteId: string, pdfId: string) =>
     invoke<NoteMeta>("link_pdf_to_note", { noteId, pdfId }),
   unlinkPdf: (noteId: string, pdfId: string) =>
@@ -46,6 +47,7 @@ export const pdfsApi = {
     invoke<PdfMeta>("add_pdf_from_path", { path, title: title ?? null }),
   addFromUrl: (url: string, title?: string) =>
     invoke<PdfMeta>("add_pdf_from_url", { url, title: title ?? null }),
+  rename: (id: string, title: string) => invoke<PdfMeta>("rename_pdf", { id, title }),
   remove: (id: string) => invoke<void>("delete_pdf", { id }),
   restore: (id: string) => invoke<PdfMeta>("restore_pdf", { id }),
   permanentlyDelete: (id: string) => invoke<void>("permanently_delete_pdf", { id }),

@@ -18,10 +18,13 @@
     "create-note": void;
     "create-child-note": string;
     "delete-note": string;
+    "rename-note": { id: string; title: string };
+    "reparent-note": { noteId: string; parentId: string | null; position: number | null };
     "select-pdf": string;
     "add-pdf-file": void;
     "add-pdf-url": void;
     "delete-pdf": string;
+    "rename-pdf": { id: string; title: string };
     "open-settings": void;
     "open-palette": void;
   }>();
@@ -86,6 +89,8 @@
           on:create={() => dispatch("create-note")}
           on:create-child={(e) => dispatch("create-child-note", e.detail)}
           on:delete={(e) => dispatch("delete-note", e.detail)}
+          on:rename={(e) => dispatch("rename-note", e.detail)}
+          on:reparent={(e) => dispatch("reparent-note", e.detail)}
         />
       {/if}
     {:else if view === "pdfs"}
@@ -96,6 +101,7 @@
         on:add-file={() => dispatch("add-pdf-file")}
         on:add-url={() => dispatch("add-pdf-url")}
         on:delete={(e) => dispatch("delete-pdf", e.detail)}
+        on:rename={(e) => dispatch("rename-pdf", e.detail)}
       />
     {:else}
       <div class="trash-hint">See the Trash panel in the main area.</div>

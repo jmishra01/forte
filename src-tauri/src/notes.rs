@@ -141,6 +141,7 @@ pub fn create_note(
         updated_at: now,
         tags: Vec::new(),
         parent_id,
+        position: None,
         linked_pdf_ids: Vec::new(),
         trashed_at: None,
     };
@@ -168,6 +169,23 @@ pub fn update_note(state: State<AppState>, id: String, title: String, content: S
     Ok(meta)
 }
 
+/// Updates just the title, leaving content untouched — used for renaming from
+/// the sidebar tree, where the note's content isn't loaded.
+#[tauri::command]
+pub fn rename_note(state: State<AppState>, id: String, title: String) -> Result<NoteMeta, String> {
+    let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
+    let mut index = read_index(&dirs);
+    let entry = index.iter_mut().find(|n| n.id == id).ok_or("Note not found")?;
+    let trimmed = title.trim();
+    if !trimmed.is_empty() {
+        entry.title = trimmed.to_string();
+        entry.updated_at = Utc::now().to_rfc3339();
+    }
+    let meta = entry.clone();
+    write_index(&dirs, &index)?;
+    Ok(meta)
+}
+
 #[tauri::command]
 pub fn set_note_tags(state: State<AppState>, id: String, tags: Vec<String>) -> Result<NoteMeta, String> {
     let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
@@ -184,6 +202,7 @@ pub fn set_note_parent(
     state: State<AppState>,
     id: String,
     parent_id: Option<String>,
+    position: Option<f64>,
 ) -> Result<NoteMeta, String> {
     let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
     let mut index = read_index(&dirs);
@@ -202,6 +221,9 @@ pub fn set_note_parent(
 
     let entry = index.iter_mut().find(|n| n.id == id).ok_or("Note not found")?;
     entry.parent_id = parent_id;
+    if let Some(pos) = position {
+        entry.position = Some(pos);
+    }
     let meta = entry.clone();
     write_index(&dirs, &index)?;
     Ok(meta)

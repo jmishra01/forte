@@ -171,6 +171,20 @@ pub fn update_pdf_progress(state: State<AppState>, id: String, page: u32) -> Res
 }
 
 #[tauri::command]
+pub fn rename_pdf(state: State<AppState>, id: String, title: String) -> Result<PdfMeta, String> {
+    let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
+    let mut index = read_index(&dirs);
+    let entry = index.iter_mut().find(|p| p.id == id).ok_or("PDF not found")?;
+    let trimmed = title.trim();
+    if !trimmed.is_empty() {
+        entry.title = trimmed.to_string();
+    }
+    let meta = entry.clone();
+    write_index(&dirs, &index)?;
+    Ok(meta)
+}
+
+#[tauri::command]
 pub fn delete_pdf(state: State<AppState>, id: String) -> Result<(), String> {
     let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
     let mut index = read_index(&dirs);

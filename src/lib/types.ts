@@ -5,6 +5,7 @@ export interface NoteMeta {
   updatedAt: string;
   tags: string[];
   parentId: string | null;
+  position: number | null;
   linkedPdfIds: string[];
   trashedAt: string | null;
 }

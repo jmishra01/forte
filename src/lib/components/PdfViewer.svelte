@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
   import * as pdfjsLib from "pdfjs-dist";
   import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.js?url";
   import type { PDFDocumentProxy } from "pdfjs-dist";
@@ -10,20 +10,59 @@
 
   export let pdf: PdfMeta;
 
+  const dispatch = createEventDispatcher<{ rename: { id: string; title: string } }>();
+
   const HIGHLIGHT_COLOR = "rgba(255, 213, 79, 0.45)";
   const MIN_RECT_SIZE = 0.01;
 
+  let title = pdf.title;
+  let renameTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function scheduleRename() {
+    if (renameTimer) clearTimeout(renameTimer);
+    renameTimer = setTimeout(async () => {
+      const trimmed = title.trim();
+      if (!trimmed) {
+        title = pdf.title;
+        return;
+      }
+      await pdfsApi.rename(pdf.id, trimmed);
+      dispatch("rename", { id: pdf.id, title: trimmed });
+    }, 500);
+  }
+
   let canvas: HTMLCanvasElement;
   let wrapper: HTMLDivElement;
+  let canvasAreaEl: HTMLDivElement;
   let doc: PDFDocumentProxy | null = null;
   let pageNum = 1;
   let numPages = 0;
   let scale = 1.2;
+  let fitMode: "none" | "width" | "page" = "none";
   let loading = true;
   let error: string | null = null;
   let currentId = "";
   let renderedWidth = 0;
   let renderedHeight = 0;
+  let resizeObserver: ResizeObserver | undefined;
+
+  onMount(() => {
+    resizeObserver = new ResizeObserver(() => {
+      if (fitMode !== "none" && doc) renderPage();
+    });
+    if (canvasAreaEl) resizeObserver.observe(canvasAreaEl);
+  });
+
+  onDestroy(() => {
+    resizeObserver?.disconnect();
+    if (renameTimer) {
+      clearTimeout(renameTimer);
+      const trimmed = title.trim();
+      if (trimmed && trimmed !== pdf.title) {
+        pdfsApi.rename(pdf.id, trimmed).then(() => dispatch("rename", { id: pdf.id, title: trimmed }));
+      }
+    }
+  });
 
   let annotating = false;
   let allAnnotations: PdfAnnotation[] = [];
@@ -70,9 +109,27 @@
     allAnnotations = await pdfsApi.listAnnotations(id);
   }
 
+  function computeFitScale(baseWidth: number, baseHeight: number): number {
+    if (!canvasAreaEl) return scale;
+    const padding = 40; // matches .canvas-area's 20px padding on each side
+    const availableWidth = canvasAreaEl.clientWidth - padding;
+    const availableHeight = canvasAreaEl.clientHeight - padding;
+    if (fitMode === "width") {
+      return Math.max(0.1, availableWidth / baseWidth);
+    }
+    if (fitMode === "page") {
+      return Math.max(0.1, Math.min(availableWidth / baseWidth, availableHeight / baseHeight));
+    }
+    return scale;
+  }
+
   async function renderPage() {
     if (!doc || !canvas) return;
     const page = await doc.getPage(pageNum);
+    if (fitMode !== "none") {
+      const baseViewport = page.getViewport({ scale: 1 });
+      scale = computeFitScale(baseViewport.width, baseViewport.height);
+    }
     const viewport = page.getViewport({ scale });
     const ctx = canvas.getContext("2d")!;
     canvas.width = viewport.width;
@@ -100,12 +157,24 @@
   }
 
   function zoomIn() {
+    fitMode = "none";
     scale = Math.min(scale + 0.2, 4);
     renderPage();
   }
 
   function zoomOut() {
+    fitMode = "none";
     scale = Math.max(scale - 0.2, 0.4);
+    renderPage();
+  }
+
+  function toggleFitWidth() {
+    fitMode = fitMode === "width" ? "none" : "width";
+    renderPage();
+  }
+
+  function toggleFitPage() {
+    fitMode = fitMode === "page" ? "none" : "page";
     renderPage();
   }
 
@@ -175,7 +244,13 @@
 
 <div class="viewer">
   <div class="toolbar">
-    <span class="title" title={pdf.title}>{pdf.title}</span>
+    <input
+      class="title-input"
+      bind:value={title}
+      on:input={scheduleRename}
+      title={pdf.title}
+      placeholder="Untitled"
+    />
     {#if pdf.sourceUrl}
       <span class="source" title={pdf.sourceUrl}>from URL</span>
     {/if}
@@ -193,10 +268,16 @@
     <button on:click={zoomOut}>−</button>
     <span class="zoom">{Math.round(scale * 100)}%</span>
     <button on:click={zoomIn}>+</button>
+    <button class="fit-btn" class:active={fitMode === "width"} on:click={toggleFitWidth}>
+      Fit width
+    </button>
+    <button class="fit-btn" class:active={fitMode === "page"} on:click={toggleFitPage}>
+      Fit page
+    </button>
   </div>
 
   <div class="body">
-    <div class="canvas-area">
+    <div class="canvas-area" bind:this={canvasAreaEl}>
       {#if loading}
         <p class="status">Loading PDF…</p>
       {:else if error}
@@ -278,13 +359,20 @@
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
   }
-  .title {
+  .title-input {
     font-size: 14px;
     font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    border: none;
+    background: none;
+    color: var(--text);
+    outline: none;
     max-width: 240px;
+    padding: 2px 4px;
+    border-radius: 4px;
+  }
+  .title-input:hover,
+  .title-input:focus {
+    background: var(--bg-alt);
   }
   .source {
     font-size: 11px;
@@ -312,6 +400,14 @@
     font-size: 12px !important;
   }
   .annotate-toggle.active {
+    background: var(--accent) !important;
+    color: white !important;
+    border-color: var(--accent) !important;
+  }
+  .fit-btn {
+    font-size: 12px !important;
+  }
+  .fit-btn.active {
     background: var(--accent) !important;
     color: white !important;
     border-color: var(--accent) !important;

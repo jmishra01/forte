@@ -90,6 +90,28 @@
     notes = await notesApi.list();
   }
 
+  async function renameNote(id: string, title: string) {
+    try {
+      await notesApi.rename(id, title);
+      notes = await notesApi.list();
+      if (selectedNote?.id === id) selectedNote = { ...selectedNote, title };
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to rename note");
+    }
+  }
+
+  async function reparentNote(noteId: string, parentId: string | null, position: number | null) {
+    try {
+      await notesApi.setParent(noteId, parentId, position);
+      notes = await notesApi.list();
+      if (selectedNote?.id === noteId) {
+        selectedNote = { ...selectedNote, parentId };
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to move note");
+    }
+  }
+
   async function onNoteSaved() {
     notes = await notesApi.list();
     tags = await notesApi.listTags();
@@ -144,6 +166,16 @@
     await pdfsApi.remove(id);
     if (selectedPdf?.id === id) selectedPdf = null;
     pdfs = await pdfsApi.list();
+  }
+
+  async function renamePdf(id: string, title: string) {
+    try {
+      await pdfsApi.rename(id, title);
+      pdfs = await pdfsApi.list();
+      if (selectedPdf?.id === id) selectedPdf = { ...selectedPdf, title };
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to rename PDF");
+    }
   }
 
   async function handleDrop(paths: string[]) {
@@ -203,6 +235,8 @@
     on:create-note={createNote}
     on:create-child-note={(e) => createChildNote(e.detail)}
     on:delete-note={(e) => deleteNote(e.detail)}
+    on:rename-note={(e) => renameNote(e.detail.id, e.detail.title)}
+    on:reparent-note={(e) => reparentNote(e.detail.noteId, e.detail.parentId, e.detail.position)}
     on:select-pdf={(e) => selectPdf(e.detail)}
     on:add-pdf-file={addPdfFile}
     on:add-pdf-url={() => {
@@ -210,6 +244,7 @@
       showAddUrlDialog = true;
     }}
     on:delete-pdf={(e) => deletePdf(e.detail)}
+    on:rename-pdf={(e) => renamePdf(e.detail.id, e.detail.title)}
     on:open-settings={() => (showSettings = true)}
     on:open-palette={() => (showPalette = true)}
   />
@@ -234,7 +269,13 @@
     {:else if view === "pdfs"}
       {#if selectedPdf}
         {#key selectedPdf.id}
-          <PdfViewer pdf={selectedPdf} />
+          <PdfViewer
+            pdf={selectedPdf}
+            on:rename={(e) => {
+              if (selectedPdf) selectedPdf = { ...selectedPdf, title: e.detail.title };
+              pdfsApi.list().then((list) => (pdfs = list));
+            }}
+          />
         {/key}
       {:else}
         <div class="placeholder">Select a PDF, or add one from a file or URL.</div>

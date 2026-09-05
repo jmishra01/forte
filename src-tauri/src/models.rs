@@ -15,6 +15,11 @@ pub struct NoteMeta {
     pub tags: Vec<String>,
     #[serde(default)]
     pub parent_id: Option<String>,
+    /// Manual sibling ordering (fractional index). `None` for notes created
+    /// before this existed or never manually reordered — the frontend falls
+    /// back to sorting those by `created_at`.
+    #[serde(default)]
+    pub position: Option<f64>,
     #[serde(default)]
     pub linked_pdf_ids: Vec<String>,
     #[serde(default)]

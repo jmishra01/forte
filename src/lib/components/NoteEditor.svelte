@@ -5,6 +5,7 @@
   import { exportNoteToPdf } from "../exportPdf";
   import type { Note, PdfMeta } from "../types";
   import NoteInfoPanel from "./NoteInfoPanel.svelte";
+  import InlineMarkdownEditor from "./InlineMarkdownEditor.svelte";
 
   export let note: Note;
   export let pdfs: PdfMeta[] = [];
@@ -20,7 +21,6 @@
   let content = note.content;
   let tags = [...note.tags];
   let linkedPdfIds = [...note.linkedPdfIds];
-  let mode: "edit" | "split" | "preview" = "split";
   let status: "saved" | "saving" | "dirty" = "saved";
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let currentId = note.id;
@@ -30,9 +30,11 @@
   let showInfoPanel = false;
   let exporting = false;
 
-  let textareaEl: HTMLTextAreaElement;
+  let inlineEditorRef: InlineMarkdownEditor | undefined;
   let exportPreviewEl: HTMLDivElement;
 
+  // Only used to feed the offscreen export-to-PDF snapshot — the visible
+  // editor renders its own live preview inline instead of a separate pane.
   $: rawHtml = renderMarkdown(content);
   let resolvedHtml = "";
   let renderToken = 0;
@@ -80,30 +82,21 @@
   }
 
   export async function insertAtCursor(text: string) {
-    if (!textareaEl) {
+    if (!inlineEditorRef) {
       content += text;
       scheduleSave();
       return;
     }
-    const start = textareaEl.selectionStart;
-    const end = textareaEl.selectionEnd;
-    content = content.slice(0, start) + text + content.slice(end);
-    scheduleSave();
-    await tick();
-    textareaEl.focus();
-    textareaEl.selectionStart = textareaEl.selectionEnd = start + text.length;
+    inlineEditorRef.insertAtCursor(text);
   }
 
-  function handleInput() {
+  function handleTitleInput() {
     scheduleSave();
   }
 
-  function handlePreviewClick(e: MouseEvent) {
-    const target = (e.target as HTMLElement).closest("a.wikilink") as HTMLElement | null;
-    if (!target) return;
-    e.preventDefault();
-    const linkTitle = target.getAttribute("data-wikilink");
-    if (linkTitle) dispatch("open-wikilink", linkTitle);
+  function handleEditorChange(e: CustomEvent<string>) {
+    content = e.detail;
+    scheduleSave();
   }
 
   async function addTag() {
@@ -164,12 +157,7 @@
 
 <div class="editor">
   <div class="toolbar">
-    <input class="title-input" bind:value={title} on:input={handleInput} placeholder="Untitled" />
-    <div class="mode-switch">
-      <button class:active={mode === "edit"} on:click={() => (mode = "edit")}>Edit</button>
-      <button class:active={mode === "split"} on:click={() => (mode = "split")}>Split</button>
-      <button class:active={mode === "preview"} on:click={() => (mode = "preview")}>Preview</button>
-    </div>
+    <input class="title-input" bind:value={title} on:input={handleTitleInput} placeholder="Untitled" />
     <span class="status">{status === "dirty" ? "Unsaved…" : status === "saving" ? "Saving…" : "Saved"}</span>
   </div>
 
@@ -207,22 +195,14 @@
   </div>
 
   <div class="main-row">
-    <div class="panes" class:single={mode !== "split"}>
-      {#if mode !== "preview"}
-        <textarea
-          bind:this={textareaEl}
-          bind:value={content}
-          on:input={handleInput}
-          spellcheck="false"
-          placeholder="Write markdown here… Use [[Note Title]] to link other notes."
-        ></textarea>
-      {/if}
-      {#if mode !== "edit"}
-        <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-        <div class="preview" role="document" on:click={handlePreviewClick}>
-          {@html resolvedHtml}
-        </div>
-      {/if}
+    <div class="editor-pane">
+      <InlineMarkdownEditor
+        bind:this={inlineEditorRef}
+        value={content}
+        placeholder="Write markdown here… Use [[Note Title]] to link other notes."
+        on:change={handleEditorChange}
+        on:wikilinkClick={(e) => dispatch("open-wikilink", e.detail)}
+      />
     </div>
 
     {#if showInfoPanel}
@@ -259,32 +239,24 @@
     padding: 10px 16px;
     border-bottom: 1px solid var(--border);
   }
+
   .title-input {
     flex: 1;
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 600;
     border: none;
     background: none;
     color: var(--text);
     outline: none;
+    max-width: 240px;
+    padding: 2px 4px;
+    border-radius: 4px;
   }
-  .mode-switch {
-    display: flex;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    overflow: hidden;
+  .title-input:hover,
+  .title-input:focus {
+    background: var(--bg-alt);
   }
-  .mode-switch button {
-    background: none;
-    border: none;
-    padding: 5px 10px;
-    font-size: 12px;
-    color: var(--text-muted);
-  }
-  .mode-switch button.active {
-    background: var(--accent);
-    color: white;
-  }
+
   .status {
     font-size: 12px;
     color: var(--text-muted);
@@ -358,71 +330,11 @@
     display: flex;
     overflow: hidden;
   }
-  .panes {
+  .editor-pane {
     flex: 1;
     display: flex;
     overflow: hidden;
     min-width: 0;
-  }
-  .panes.single {
-    display: block;
-  }
-  textarea {
-    flex: 1;
-    min-width: 0;
-    height: 100%;
-    resize: none;
-    border: none;
-    outline: none;
-    padding: 16px 20px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 14px;
-    line-height: 1.6;
-    background: var(--bg);
-    color: var(--text);
-    border-right: 1px solid var(--border);
-  }
-  .panes.single textarea {
-    border-right: none;
-    width: 100%;
-  }
-  .preview {
-    flex: 1;
-    min-width: 0;
-    height: 100%;
-    overflow-y: auto;
-    padding: 16px 24px;
-    line-height: 1.6;
-  }
-  .panes.single .preview {
-    width: 100%;
-  }
-  .preview :global(h1),
-  .preview :global(h2),
-  .preview :global(h3) {
-    line-height: 1.3;
-  }
-  .preview :global(pre) {
-    background: var(--bg-alt);
-    padding: 10px 14px;
-    border-radius: 6px;
-    overflow-x: auto;
-  }
-  .preview :global(code) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-  .preview :global(blockquote) {
-    margin: 0;
-    padding-left: 12px;
-    border-left: 3px solid var(--border);
-    color: var(--text-muted);
-  }
-  .preview :global(img) {
-    max-width: 100%;
-  }
-  .preview :global(a.wikilink) {
-    color: var(--accent);
-    text-decoration: underline dotted;
   }
   .export-offscreen {
     position: fixed;
@@ -432,5 +344,28 @@
     padding: 24px;
     background: white;
     color: #1b1b1f;
+  }
+  .export-offscreen :global(h1),
+  .export-offscreen :global(h2),
+  .export-offscreen :global(h3) {
+    line-height: 1.3;
+  }
+  .export-offscreen :global(pre) {
+    background: #f0f0f0;
+    padding: 10px 14px;
+    border-radius: 6px;
+    overflow-x: auto;
+  }
+  .export-offscreen :global(code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .export-offscreen :global(blockquote) {
+    margin: 0;
+    padding-left: 12px;
+    border-left: 3px solid #ccc;
+    color: #555;
+  }
+  .export-offscreen :global(img) {
+    max-width: 100%;
   }
 </style>
