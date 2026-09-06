@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { NoteMeta, PdfMeta } from "../types";
+  import type { NoteMeta, PdfFolder, PdfMeta } from "../types";
   import NoteList from "./NoteList.svelte";
   import NoteTree from "./NoteTree.svelte";
   import PdfList from "./PdfList.svelte";
@@ -8,7 +8,9 @@
   export let view: "notes" | "pdfs" | "trash";
   export let notes: NoteMeta[];
   export let pdfs: PdfMeta[];
+  export let pdfFolders: PdfFolder[] = [];
   export let tags: string[] = [];
+  export let pdfTags: string[] = [];
   export let selectedNoteId: string | null;
   export let selectedPdfId: string | null;
 
@@ -25,13 +27,19 @@
     "add-pdf-url": void;
     "delete-pdf": string;
     "rename-pdf": { id: string; title: string };
+    "create-pdf-folder": void;
+    "rename-pdf-folder": { id: string; name: string };
+    "delete-pdf-folder": string;
+    "move-pdf-to-folder": { id: string; folderId: string | null };
     "open-settings": void;
     "open-palette": void;
   }>();
 
   let selectedTag = "";
+  let selectedPdfTag = "";
 
   $: filteredNotes = selectedTag ? notes.filter((n) => n.tags.includes(selectedTag)) : notes;
+  $: filteredPdfs = selectedPdfTag ? pdfs.filter((p) => p.tags.includes(selectedPdfTag)) : pdfs;
 
   $: isFiltering = selectedTag !== "";
 
@@ -127,14 +135,29 @@
           />
         {/if}
       {:else if view === "pdfs"}
+        {#if pdfTags.length}
+          <div class="filters">
+            <select class="tag-select" bind:value={selectedPdfTag}>
+              <option value="">All tags</option>
+              {#each pdfTags as t (t)}
+                <option value={t}>{t}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
         <PdfList
-          {pdfs}
+          pdfs={filteredPdfs}
+          folders={pdfFolders}
           selectedId={selectedPdfId}
           on:select={(e) => dispatch("select-pdf", e.detail)}
           on:add-file={() => dispatch("add-pdf-file")}
           on:add-url={() => dispatch("add-pdf-url")}
           on:delete={(e) => dispatch("delete-pdf", e.detail)}
           on:rename={(e) => dispatch("rename-pdf", e.detail)}
+          on:create-folder={() => dispatch("create-pdf-folder")}
+          on:rename-folder={(e) => dispatch("rename-pdf-folder", e.detail)}
+          on:delete-folder={(e) => dispatch("delete-pdf-folder", e.detail)}
+          on:move-to-folder={(e) => dispatch("move-pdf-to-folder", e.detail)}
         />
       {:else}
         <div class="trash-hint">See the Trash panel in the main area.</div>

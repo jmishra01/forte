@@ -89,7 +89,15 @@
 </script>
 
 <div class="panel">
-  <button class="new-btn" on:click={() => dispatch("create")}>+ New note</button>
+  <button class="new-btn" on:click={() => dispatch("create")}>
+    <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 3h5l3 3v10a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+      <path d="M11 3v3h3" />
+      <line x1="10" y1="10.5" x2="10" y2="14.5" />
+      <line x1="8" y1="12.5" x2="12" y2="12.5" />
+    </svg>
+    New note
+  </button>
   {#if $dragState.draggingId}
     <div
       class="root-drop-zone"
@@ -126,6 +134,10 @@
     overflow: hidden;
   }
   .new-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     margin: 10px;
     padding: 8px 10px;
     border: 1px solid var(--border);

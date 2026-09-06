@@ -16,8 +16,7 @@
     "dompurify": "^3.1.6",
     "html2canvas": "^1.4.1",
     "jspdf": "^2.5.2",
-    "marked": "^13.0.3",
-    "pdfjs-dist": "3.11.174"
+    "marked": "^13.0.3"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^3.1.2",

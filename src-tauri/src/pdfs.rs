@@ -1,4 +1,4 @@
-use crate::models::{PdfAnnotation, PdfMeta};
+use crate::models::{PdfFolder, PdfMeta};
 use crate::state::{AppState, Dirs};
 use chrono::Utc;
 use std::fs;
@@ -20,20 +20,18 @@ fn write_index(dirs: &Dirs, index: &[PdfMeta]) -> Result<(), String> {
     fs::write(path, data).map_err(|e| e.to_string())
 }
 
-fn annotations_path(dirs: &Dirs, pdf_id: &str) -> std::path::PathBuf {
-    dirs.annotations_dir.join(format!("{}.json", pdf_id))
-}
-
-fn read_annotations(dirs: &Dirs, pdf_id: &str) -> Vec<PdfAnnotation> {
-    fs::read_to_string(annotations_path(dirs, pdf_id))
+fn read_folders_index(dirs: &Dirs) -> Vec<PdfFolder> {
+    let path = dirs.pdfs_dir.join("folders.json");
+    fs::read_to_string(&path)
         .ok()
         .and_then(|data| serde_json::from_str(&data).ok())
         .unwrap_or_default()
 }
 
-fn write_annotations(dirs: &Dirs, pdf_id: &str, list: &[PdfAnnotation]) -> Result<(), String> {
-    let data = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
-    fs::write(annotations_path(dirs, pdf_id), data).map_err(|e| e.to_string())
+fn write_folders_index(dirs: &Dirs, index: &[PdfFolder]) -> Result<(), String> {
+    let path = dirs.pdfs_dir.join("folders.json");
+    let data = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
+    fs::write(path, data).map_err(|e| e.to_string())
 }
 
 fn save_pdf(
@@ -54,7 +52,10 @@ fn save_pdf(
         added_at: Utc::now().to_rfc3339(),
         file_name,
         last_page: 1,
+        completed: false,
         trashed_at: None,
+        folder_id: None,
+        tags: Vec::new(),
     };
     let mut index = read_index(dirs);
     index.push(meta.clone());
@@ -162,12 +163,14 @@ pub fn get_pdf_path(state: State<AppState>, id: String) -> Result<String, String
 }
 
 #[tauri::command]
-pub fn update_pdf_progress(state: State<AppState>, id: String, page: u32) -> Result<(), String> {
+pub fn set_pdf_completed(state: State<AppState>, id: String, completed: bool) -> Result<PdfMeta, String> {
     let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
     let mut index = read_index(&dirs);
     let entry = index.iter_mut().find(|p| p.id == id).ok_or("PDF not found")?;
-    entry.last_page = page.max(1);
-    write_index(&dirs, &index)
+    entry.completed = completed;
+    let meta = entry.clone();
+    write_index(&dirs, &index)?;
+    Ok(meta)
 }
 
 #[tauri::command]
@@ -212,7 +215,6 @@ pub fn permanently_delete_pdf(state: State<AppState>, id: String) -> Result<(), 
         let _ = fs::remove_file(dirs.pdfs_dir.join(&meta.file_name));
     }
     index.retain(|p| p.id != id);
-    let _ = fs::remove_file(annotations_path(&dirs, &id));
     write_index(&dirs, &index)
 }
 
@@ -224,52 +226,102 @@ pub fn empty_pdfs_trash(state: State<AppState>) -> Result<(), String> {
         index.drain(..).partition(|p| p.trashed_at.is_some());
     for p in &trashed {
         let _ = fs::remove_file(dirs.pdfs_dir.join(&p.file_name));
-        let _ = fs::remove_file(annotations_path(&dirs, &p.id));
     }
     write_index(&dirs, &kept)
 }
 
 #[tauri::command]
-pub fn list_annotations(state: State<AppState>, pdf_id: String) -> Result<Vec<PdfAnnotation>, String> {
+pub fn list_pdf_folders(state: State<AppState>) -> Result<Vec<PdfFolder>, String> {
     let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
-    Ok(read_annotations(&dirs, &pdf_id))
+    let mut folders = read_folders_index(&dirs);
+    folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(folders)
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn add_annotation(
-    state: State<AppState>,
-    pdf_id: String,
-    page: u32,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    color: String,
-    note: Option<String>,
-) -> Result<PdfAnnotation, String> {
+pub fn create_pdf_folder(state: State<AppState>, name: String) -> Result<PdfFolder, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Folder name can't be empty".into());
+    }
     let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
-    let mut list = read_annotations(&dirs, &pdf_id);
-    let annotation = PdfAnnotation {
+    let mut folders = read_folders_index(&dirs);
+    let folder = PdfFolder {
         id: Uuid::new_v4().to_string(),
-        page,
-        x,
-        y,
-        w,
-        h,
-        color,
-        note,
+        name: trimmed.to_string(),
         created_at: Utc::now().to_rfc3339(),
     };
-    list.push(annotation.clone());
-    write_annotations(&dirs, &pdf_id, &list)?;
-    Ok(annotation)
+    folders.push(folder.clone());
+    write_folders_index(&dirs, &folders)?;
+    Ok(folder)
 }
 
 #[tauri::command]
-pub fn delete_annotation(state: State<AppState>, pdf_id: String, annotation_id: String) -> Result<(), String> {
+pub fn rename_pdf_folder(state: State<AppState>, id: String, name: String) -> Result<PdfFolder, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Folder name can't be empty".into());
+    }
     let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
-    let mut list = read_annotations(&dirs, &pdf_id);
-    list.retain(|a| a.id != annotation_id);
-    write_annotations(&dirs, &pdf_id, &list)
+    let mut folders = read_folders_index(&dirs);
+    let entry = folders.iter_mut().find(|f| f.id == id).ok_or("Folder not found")?;
+    entry.name = trimmed.to_string();
+    let folder = entry.clone();
+    write_folders_index(&dirs, &folders)?;
+    Ok(folder)
+}
+
+#[tauri::command]
+pub fn delete_pdf_folder(state: State<AppState>, id: String) -> Result<(), String> {
+    let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
+    let mut folders = read_folders_index(&dirs);
+    folders.retain(|f| f.id != id);
+    write_folders_index(&dirs, &folders)?;
+
+    let mut index = read_index(&dirs);
+    for p in index.iter_mut().filter(|p| p.folder_id.as_deref() == Some(id.as_str())) {
+        p.folder_id = None;
+    }
+    write_index(&dirs, &index)
+}
+
+#[tauri::command]
+pub fn set_pdf_folder(state: State<AppState>, id: String, folder_id: Option<String>) -> Result<PdfMeta, String> {
+    let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
+    if let Some(fid) = &folder_id {
+        let folders = read_folders_index(&dirs);
+        if !folders.iter().any(|f| &f.id == fid) {
+            return Err("Folder not found".into());
+        }
+    }
+    let mut index = read_index(&dirs);
+    let entry = index.iter_mut().find(|p| p.id == id).ok_or("PDF not found")?;
+    entry.folder_id = folder_id;
+    let meta = entry.clone();
+    write_index(&dirs, &index)?;
+    Ok(meta)
+}
+
+#[tauri::command]
+pub fn set_pdf_tags(state: State<AppState>, id: String, tags: Vec<String>) -> Result<PdfMeta, String> {
+    let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
+    let mut index = read_index(&dirs);
+    let entry = index.iter_mut().find(|p| p.id == id).ok_or("PDF not found")?;
+    entry.tags = tags;
+    let meta = entry.clone();
+    write_index(&dirs, &index)?;
+    Ok(meta)
+}
+
+#[tauri::command]
+pub fn list_pdf_tags(state: State<AppState>) -> Result<Vec<String>, String> {
+    let dirs = state.dirs.lock().map_err(|e| e.to_string())?;
+    let mut tags: Vec<String> = read_index(&dirs)
+        .into_iter()
+        .filter(|p| p.trashed_at.is_none())
+        .flat_map(|p| p.tags)
+        .collect();
+    tags.sort();
+    tags.dedup();
+    Ok(tags)
 }

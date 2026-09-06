@@ -32,18 +32,15 @@ export interface PdfMeta {
   addedAt: string;
   fileName: string;
   lastPage: number;
+  completed: boolean;
   trashedAt: string | null;
+  folderId: string | null;
+  tags: string[];
 }
 
-export interface PdfAnnotation {
+export interface PdfFolder {
   id: string;
-  page: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  color: string;
-  note: string | null;
+  name: string;
   createdAt: string;
 }
 

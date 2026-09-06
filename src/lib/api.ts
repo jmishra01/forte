@@ -7,7 +7,7 @@ import type {
   NoteMeta,
   NoteVersion,
   NoteVersionContent,
-  PdfAnnotation,
+  PdfFolder,
   PdfMeta,
 } from "./types";
 
@@ -52,30 +52,16 @@ export const pdfsApi = {
   restore: (id: string) => invoke<PdfMeta>("restore_pdf", { id }),
   permanentlyDelete: (id: string) => invoke<void>("permanently_delete_pdf", { id }),
   emptyTrash: () => invoke<void>("empty_pdfs_trash"),
-  updateProgress: (id: string, page: number) => invoke<void>("update_pdf_progress", { id, page }),
-  listAnnotations: (pdfId: string) => invoke<PdfAnnotation[]>("list_annotations", { pdfId }),
-  addAnnotation: (
-    pdfId: string,
-    page: number,
-    x: number,
-    y: number,
-    w: number,
-    h: number,
-    color: string,
-    note?: string
-  ) =>
-    invoke<PdfAnnotation>("add_annotation", {
-      pdfId,
-      page,
-      x,
-      y,
-      w,
-      h,
-      color,
-      note: note ?? null,
-    }),
-  deleteAnnotation: (pdfId: string, annotationId: string) =>
-    invoke<void>("delete_annotation", { pdfId, annotationId }),
+  setCompleted: (id: string, completed: boolean) =>
+    invoke<PdfMeta>("set_pdf_completed", { id, completed }),
+  listFolders: () => invoke<PdfFolder[]>("list_pdf_folders"),
+  createFolder: (name: string) => invoke<PdfFolder>("create_pdf_folder", { name }),
+  renameFolder: (id: string, name: string) => invoke<PdfFolder>("rename_pdf_folder", { id, name }),
+  deleteFolder: (id: string) => invoke<void>("delete_pdf_folder", { id }),
+  setFolder: (id: string, folderId: string | null) =>
+    invoke<PdfMeta>("set_pdf_folder", { id, folderId }),
+  setTags: (id: string, tags: string[]) => invoke<PdfMeta>("set_pdf_tags", { id, tags }),
+  listTags: () => invoke<string[]>("list_pdf_tags"),
   async assetUrl(id: string): Promise<string> {
     const path = await invoke<string>("get_pdf_path", { id });
     return convertFileSrc(path);

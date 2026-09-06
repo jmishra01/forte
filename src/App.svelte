@@ -5,23 +5,28 @@
   import NoteEditor from "./lib/components/NoteEditor.svelte";
   import PdfViewer from "./lib/components/PdfViewer.svelte";
   import AddPdfDialog from "./lib/components/AddPdfDialog.svelte";
+  import NewFolderDialog from "./lib/components/NewFolderDialog.svelte";
   import TrashView from "./lib/components/TrashView.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import { notesApi, pdfsApi, attachmentsApi } from "./lib/api";
-  import type { Note, NoteMeta, PdfMeta } from "./lib/types";
+  import type { Note, NoteMeta, PdfFolder, PdfMeta } from "./lib/types";
 
   const IMAGE_RE = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
 
   let view: "notes" | "pdfs" | "trash" = "notes";
   let notes: NoteMeta[] = [];
   let pdfs: PdfMeta[] = [];
+  let pdfFolders: PdfFolder[] = [];
   let tags: string[] = [];
+  let pdfTags: string[] = [];
   let selectedNote: Note | null = null;
   let selectedPdf: PdfMeta | null = null;
   let showAddUrlDialog = false;
   let addUrlBusy = false;
   let addUrlError: string | null = null;
+  let showNewFolderDialog = false;
+  let newFolderError: string | null = null;
   let showPalette = false;
   let showSettings = false;
 
@@ -46,7 +51,9 @@
   async function refreshAll() {
     notes = await notesApi.list();
     pdfs = await pdfsApi.list();
+    pdfFolders = await pdfsApi.listFolders();
     tags = await notesApi.listTags();
+    pdfTags = await pdfsApi.listTags();
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
@@ -178,6 +185,71 @@
     }
   }
 
+  async function togglePdfCompleted(id: string, completed: boolean) {
+    try {
+      await pdfsApi.setCompleted(id, completed);
+      pdfs = await pdfsApi.list();
+      if (selectedPdf?.id === id) selectedPdf = { ...selectedPdf, completed };
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to update PDF");
+    }
+  }
+
+  async function setPdfTags(id: string, newTags: string[]) {
+    try {
+      await pdfsApi.setTags(id, newTags);
+      pdfs = await pdfsApi.list();
+      pdfTags = await pdfsApi.listTags();
+      if (selectedPdf?.id === id) selectedPdf = { ...selectedPdf, tags: newTags };
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to update tags");
+    }
+  }
+
+  function openNewFolderDialog() {
+    newFolderError = null;
+    showNewFolderDialog = true;
+  }
+
+  async function submitNewFolder(event: CustomEvent<string>) {
+    try {
+      await pdfsApi.createFolder(event.detail);
+      pdfFolders = await pdfsApi.listFolders();
+      showNewFolderDialog = false;
+    } catch (e) {
+      newFolderError = e instanceof Error ? e.message : "Failed to create folder";
+    }
+  }
+
+  async function renamePdfFolder(id: string, name: string) {
+    try {
+      await pdfsApi.renameFolder(id, name);
+      pdfFolders = await pdfsApi.listFolders();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to rename folder");
+    }
+  }
+
+  async function deletePdfFolder(id: string) {
+    try {
+      await pdfsApi.deleteFolder(id);
+      pdfFolders = await pdfsApi.listFolders();
+      pdfs = await pdfsApi.list();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to delete folder");
+    }
+  }
+
+  async function movePdfToFolder(id: string, folderId: string | null) {
+    try {
+      await pdfsApi.setFolder(id, folderId);
+      pdfs = await pdfsApi.list();
+      if (selectedPdf?.id === id) selectedPdf = { ...selectedPdf, folderId };
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to move PDF");
+    }
+  }
+
   async function handleDrop(paths: string[]) {
     const pdfPaths = paths.filter((p) => p.toLowerCase().endsWith(".pdf"));
     const imagePaths = paths.filter((p) => IMAGE_RE.test(p));
@@ -227,7 +299,9 @@
     {view}
     {notes}
     {pdfs}
+    {pdfFolders}
     {tags}
+    {pdfTags}
     selectedNoteId={selectedNote?.id ?? null}
     selectedPdfId={selectedPdf?.id ?? null}
     on:switch-view={(e) => (view = e.detail)}
@@ -245,6 +319,10 @@
     }}
     on:delete-pdf={(e) => deletePdf(e.detail)}
     on:rename-pdf={(e) => renamePdf(e.detail.id, e.detail.title)}
+    on:create-pdf-folder={openNewFolderDialog}
+    on:rename-pdf-folder={(e) => renamePdfFolder(e.detail.id, e.detail.name)}
+    on:delete-pdf-folder={(e) => deletePdfFolder(e.detail)}
+    on:move-pdf-to-folder={(e) => movePdfToFolder(e.detail.id, e.detail.folderId)}
     on:open-settings={() => (showSettings = true)}
     on:open-palette={() => (showPalette = true)}
   />
@@ -271,10 +349,15 @@
         {#key selectedPdf.id}
           <PdfViewer
             pdf={selectedPdf}
+            folders={pdfFolders}
+            tagOptions={pdfTags}
             on:rename={(e) => {
               if (selectedPdf) selectedPdf = { ...selectedPdf, title: e.detail.title };
               pdfsApi.list().then((list) => (pdfs = list));
             }}
+            on:complete={(e) => togglePdfCompleted(e.detail.id, e.detail.completed)}
+            on:set-tags={(e) => setPdfTags(e.detail.id, e.detail.tags)}
+            on:move-to-folder={(e) => movePdfToFolder(e.detail.id, e.detail.folderId)}
           />
         {/key}
       {:else}
@@ -292,6 +375,14 @@
     errorMessage={addUrlError}
     on:submit={submitAddUrl}
     on:cancel={() => (showAddUrlDialog = false)}
+  />
+{/if}
+
+{#if showNewFolderDialog}
+  <NewFolderDialog
+    errorMessage={newFolderError}
+    on:submit={submitNewFolder}
+    on:cancel={() => (showNewFolderDialog = false)}
   />
 {/if}
 

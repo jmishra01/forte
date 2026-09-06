@@ -9,7 +9,6 @@ pub struct Dirs {
     pub notes_dir: PathBuf,
     pub history_dir: PathBuf,
     pub pdfs_dir: PathBuf,
-    pub annotations_dir: PathBuf,
     pub attachments_dir: PathBuf,
 }
 
@@ -18,19 +17,16 @@ impl Dirs {
         let notes_dir = base.join("notes");
         let history_dir = notes_dir.join(".history");
         let pdfs_dir = base.join("pdfs");
-        let annotations_dir = pdfs_dir.join(".annotations");
         let attachments_dir = base.join("attachments");
         fs::create_dir_all(&notes_dir)?;
         fs::create_dir_all(&history_dir)?;
         fs::create_dir_all(&pdfs_dir)?;
-        fs::create_dir_all(&annotations_dir)?;
         fs::create_dir_all(&attachments_dir)?;
         Ok(Self {
             base,
             notes_dir,
             history_dir,
             pdfs_dir,
-            annotations_dir,
             attachments_dir,
         })
     }

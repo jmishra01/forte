@@ -61,20 +61,20 @@ pub struct PdfMeta {
     #[serde(default = "default_page")]
     pub last_page: u32,
     #[serde(default)]
+    pub completed: bool,
+    #[serde(default)]
     pub trashed_at: Option<String>,
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PdfAnnotation {
+pub struct PdfFolder {
     pub id: String,
-    pub page: u32,
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-    pub color: String,
-    pub note: Option<String>,
+    pub name: String,
     pub created_at: String,
 }
 
