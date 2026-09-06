@@ -11,6 +11,9 @@ name: Release
 # ...or run it manually from the Actions tab (Run workflow) for a test build
 # without creating a tag.
 
+permissions:
+  contents: write
+
 on:
   push:
     tags:
