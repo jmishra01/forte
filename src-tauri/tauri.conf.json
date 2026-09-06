@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "notes-pdf-app",
+  "productName": "forte",
   "version": "0.1.0",
   "identifier": "com.jitendra.notespdfapp",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Notes & PDFs",
+        "title": "Forte",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
