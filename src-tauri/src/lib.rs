@@ -14,6 +14,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let default_base = app.path().app_data_dir().expect("no app data dir");
             let config_path = app.path().app_config_dir().expect("no app config dir");

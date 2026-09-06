@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy, tick } from "svelte";
-  import { renderMarkdown, resolveAttachmentImages } from "../markdown";
+  import { resolveAttachmentImages } from "../markdown";
   import { notesApi } from "../api";
   import { exportNoteToPdf } from "../exportPdf";
   import type { Note, PdfMeta } from "../types";
@@ -34,8 +34,8 @@
   let exportPreviewEl: HTMLDivElement;
 
   // Only used to feed the offscreen export-to-PDF snapshot — the visible
-  // editor renders its own live preview inline instead of a separate pane.
-  $: rawHtml = renderMarkdown(content);
+  // editor's content is already rich-text HTML, so this is used as-is.
+  $: rawHtml = content;
   let resolvedHtml = "";
   let renderToken = 0;
   $: {
@@ -127,6 +127,14 @@
     dispatch("saved");
   }
 
+  function handleTextColorInput(e: Event) {
+    inlineEditorRef?.setTextColor((e.currentTarget as HTMLInputElement).value);
+  }
+
+  function handleBackgroundColorInput(e: Event) {
+    inlineEditorRef?.setBackgroundColor((e.currentTarget as HTMLInputElement).value);
+  }
+
   function handleRestored(e: CustomEvent<Note>) {
     title = e.detail.title;
     content = e.detail.content;
@@ -194,12 +202,45 @@
     </div>
   </div>
 
+  <div class="format-toolbar">
+    <button title="Undo (Ctrl+Z)" on:click={() => inlineEditorRef?.undo()}>⟲</button>
+    <button title="Redo (Ctrl+Shift+Z)" on:click={() => inlineEditorRef?.redo()}>⟳</button>
+    <span class="sep"></span>
+    <button title="Bold (Ctrl+B)" on:click={() => inlineEditorRef?.toggleBold()}><strong>B</strong></button>
+    <button title="Italic (Ctrl+I)" on:click={() => inlineEditorRef?.toggleItalic()}><em>I</em></button>
+    <button title="Underline" on:click={() => inlineEditorRef?.toggleUnderline()}><u>U</u></button>
+    <button title="Strikethrough" on:click={() => inlineEditorRef?.toggleStrikethrough()}><s>S</s></button>
+    <button title="Inline code" on:click={() => inlineEditorRef?.toggleInlineCode()}><code>{"</>"}</code></button>
+    <span class="sep"></span>
+    <label class="color-input-wrap" title="Text color">
+      A
+      <input type="color" on:input={handleTextColorInput} />
+    </label>
+    <label class="color-input-wrap bg" title="Background color">
+      A
+      <input type="color" on:input={handleBackgroundColorInput} />
+    </label>
+    <span class="sep"></span>
+    <button title="Heading 1" on:click={() => inlineEditorRef?.toggleHeading(1)}>H1</button>
+    <button title="Heading 2" on:click={() => inlineEditorRef?.toggleHeading(2)}>H2</button>
+    <button title="Heading 3" on:click={() => inlineEditorRef?.toggleHeading(3)}>H3</button>
+    <span class="sep"></span>
+    <button title="Bullet list" on:click={() => inlineEditorRef?.toggleBullet()}>•</button>
+    <button title="Numbered list" on:click={() => inlineEditorRef?.toggleOrdered()}>1.</button>
+    <button title="Task list" on:click={() => inlineEditorRef?.toggleTask()}>☑</button>
+    <button title="Quote" on:click={() => inlineEditorRef?.toggleQuote()}>"</button>
+    <span class="sep"></span>
+    <button title="Link (Ctrl+K)" on:click={() => inlineEditorRef?.insertLink()}>🔗</button>
+    <button title="Code block" on:click={() => inlineEditorRef?.insertCodeBlock()}>{"{ }"}</button>
+    <button title="Table" on:click={() => inlineEditorRef?.insertTable()}>⊞</button>
+  </div>
+
   <div class="main-row">
     <div class="editor-pane">
       <InlineMarkdownEditor
         bind:this={inlineEditorRef}
         value={content}
-        placeholder="Write markdown here… Use [[Note Title]] to link other notes."
+        placeholder="Start writing… Use [[Note Title]] to link other notes."
         on:change={handleEditorChange}
         on:wikilinkClick={(e) => dispatch("open-wikilink", e.detail)}
       />
@@ -325,6 +366,67 @@
   .meta-actions button:disabled {
     opacity: 0.6;
   }
+  .format-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 6px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .format-toolbar button {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1;
+    padding: 6px 8px;
+    min-width: 28px;
+  }
+  .format-toolbar button:hover {
+    background: var(--bg-alt);
+    border-color: var(--border);
+  }
+  .format-toolbar .sep {
+    width: 1px;
+    height: 18px;
+    background: var(--border);
+    margin: 0 6px;
+  }
+  .color-input-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 26px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .color-input-wrap:hover {
+    background: var(--bg-alt);
+    border-color: var(--border);
+  }
+  .color-input-wrap.bg {
+    text-decoration: underline;
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 3px;
+  }
+  .color-input-wrap input[type="color"] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: none;
+    opacity: 0;
+    cursor: pointer;
+  }
   .main-row {
     flex: 1;
     display: flex;
@@ -358,6 +460,12 @@
   }
   .export-offscreen :global(code) {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .export-offscreen :global(code:not(pre code)) {
+    background: #f0f0f0;
+    border: 1px solid #d5d5d5;
+    border-radius: 4px;
+    padding: 1px 5px;
   }
   .export-offscreen :global(blockquote) {
     margin: 0;

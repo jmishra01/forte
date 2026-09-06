@@ -36,7 +36,14 @@ function configureMarked() {
 
 configureMarked();
 
-export function renderMarkdown(content: string): string {
+// Notes created before the rich-text editor store raw markdown source on
+// disk. There's no format-version field, so this is a heuristic, one-time
+// upgrade: real HTML (what every note is saved as from now on) always
+// starts with a block tag, so anything that doesn't is legacy markdown text
+// waiting to be converted. The very next save writes back real HTML, so a
+// note is never run through this twice.
+export function migrateLegacyContent(content: string): string {
+  if (content.trimStart().startsWith("<")) return content;
   const html = marked.parse(content, { breaks: true, async: false }) as string;
   return DOMPurify.sanitize(html, { ADD_ATTR: ["data-wikilink"] });
 }

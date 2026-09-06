@@ -29,83 +29,117 @@
     "open-palette": void;
   }>();
 
-  let tagFilter: string[] = [];
+  let selectedTag = "";
 
-  $: filteredNotes = notes.filter((n) => {
-    if (tagFilter.length && !tagFilter.every((t) => n.tags.includes(t))) return false;
-    return true;
-  });
+  $: filteredNotes = selectedTag ? notes.filter((n) => n.tags.includes(selectedTag)) : notes;
 
-  function toggleTag(t: string) {
-    tagFilter = tagFilter.includes(t) ? tagFilter.filter((x) => x !== t) : [...tagFilter, t];
-  }
+  $: isFiltering = selectedTag !== "";
 
-  $: isFiltering = tagFilter.length > 0;
+  const viewLabels: Record<typeof view, string> = {
+    notes: "Notes",
+    pdfs: "PDFs",
+    trash: "Trash",
+  };
 </script>
 
 <aside>
-  <div class="top-row">
-    <div class="tabs">
-      <button class:active={view === "notes"} on:click={() => dispatch("switch-view", "notes")}>
-        Notes
-      </button>
-      <button class:active={view === "pdfs"} on:click={() => dispatch("switch-view", "pdfs")}>
-        PDFs
-      </button>
-      <button class:active={view === "trash"} on:click={() => dispatch("switch-view", "trash")}>
-        Trash
-      </button>
-    </div>
-    <button class="icon-btn" title="Search (Ctrl/Cmd+K)" on:click={() => dispatch("open-palette")}>⌕</button>
-    <button class="icon-btn" title="Settings" on:click={() => dispatch("open-settings")}>⚙</button>
-  </div>
+  <nav class="rail">
+    <button class:active={view === "notes"} title="Notes" on:click={() => dispatch("switch-view", "notes")}>
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="3" width="12" height="14" rx="1.5" />
+        <line x1="7" y1="7" x2="13" y2="7" />
+        <line x1="7" y1="10" x2="13" y2="10" />
+        <line x1="7" y1="13" x2="11" y2="13" />
+      </svg>
+    </button>
+    <button class:active={view === "pdfs"} title="PDFs" on:click={() => dispatch("switch-view", "pdfs")}>
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 2.5h5l3 3v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1z" />
+        <path d="M11 2.5v3h3" />
+        <line x1="7.5" y1="11.5" x2="12.5" y2="11.5" />
+        <line x1="7.5" y1="14" x2="11" y2="14" />
+      </svg>
+    </button>
+    <button class:active={view === "trash"} title="Trash" on:click={() => dispatch("switch-view", "trash")}>
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 6h12" />
+        <path d="M8 6V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2" />
+        <path d="M6 6l1 11a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l1-11" />
+        <line x1="8.5" y1="9" x2="8.5" y2="14" />
+        <line x1="11.5" y1="9" x2="11.5" y2="14" />
+      </svg>
+    </button>
+    <div class="spacer" />
+    <button title="Search (Ctrl/Cmd+K)" on:click={() => dispatch("open-palette")}>
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="9" cy="9" r="5.5" />
+        <line x1="13.2" y1="13.2" x2="17" y2="17" />
+      </svg>
+    </button>
+    <button title="Settings" on:click={() => dispatch("open-settings")}>
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10" cy="10" r="2.6" />
+        <line x1="10" y1="2.5" x2="10" y2="5" />
+        <line x1="10" y1="15" x2="10" y2="17.5" />
+        <line x1="2.5" y1="10" x2="5" y2="10" />
+        <line x1="15" y1="10" x2="17.5" y2="10" />
+        <line x1="4.8" y1="4.8" x2="6.5" y2="6.5" />
+        <line x1="13.5" y1="13.5" x2="15.2" y2="15.2" />
+        <line x1="4.8" y1="15.2" x2="6.5" y2="13.5" />
+        <line x1="13.5" y1="6.5" x2="15.2" y2="4.8" />
+      </svg>
+    </button>
+  </nav>
 
-  <div class="content">
-    {#if view === "notes"}
-      {#if tags.length}
-        <div class="filters">
-          <div class="tag-filters">
-            {#each tags as t (t)}
-              <button class="tag-pill" class:active={tagFilter.includes(t)} on:click={() => toggleTag(t)}>
-                {t}
-              </button>
-            {/each}
+  <div class="panel">
+    <div class="panel-header">{viewLabels[view]}</div>
+
+    <div class="content">
+      {#if view === "notes"}
+        {#if tags.length}
+          <div class="filters">
+            <select class="tag-select" bind:value={selectedTag}>
+              <option value="">All tags</option>
+              {#each tags as t (t)}
+                <option value={t}>{t}</option>
+              {/each}
+            </select>
           </div>
-        </div>
-      {/if}
-      {#if isFiltering}
-        <NoteList
-          notes={filteredNotes}
-          selectedId={selectedNoteId}
-          on:select={(e) => dispatch("select-note", e.detail)}
-          on:create={() => dispatch("create-note")}
-          on:delete={(e) => dispatch("delete-note", e.detail)}
+        {/if}
+        {#if isFiltering}
+          <NoteList
+            notes={filteredNotes}
+            selectedId={selectedNoteId}
+            on:select={(e) => dispatch("select-note", e.detail)}
+            on:create={() => dispatch("create-note")}
+            on:delete={(e) => dispatch("delete-note", e.detail)}
+          />
+        {:else}
+          <NoteTree
+            {notes}
+            selectedId={selectedNoteId}
+            on:select={(e) => dispatch("select-note", e.detail)}
+            on:create={() => dispatch("create-note")}
+            on:create-child={(e) => dispatch("create-child-note", e.detail)}
+            on:delete={(e) => dispatch("delete-note", e.detail)}
+            on:rename={(e) => dispatch("rename-note", e.detail)}
+            on:reparent={(e) => dispatch("reparent-note", e.detail)}
+          />
+        {/if}
+      {:else if view === "pdfs"}
+        <PdfList
+          {pdfs}
+          selectedId={selectedPdfId}
+          on:select={(e) => dispatch("select-pdf", e.detail)}
+          on:add-file={() => dispatch("add-pdf-file")}
+          on:add-url={() => dispatch("add-pdf-url")}
+          on:delete={(e) => dispatch("delete-pdf", e.detail)}
+          on:rename={(e) => dispatch("rename-pdf", e.detail)}
         />
       {:else}
-        <NoteTree
-          {notes}
-          selectedId={selectedNoteId}
-          on:select={(e) => dispatch("select-note", e.detail)}
-          on:create={() => dispatch("create-note")}
-          on:create-child={(e) => dispatch("create-child-note", e.detail)}
-          on:delete={(e) => dispatch("delete-note", e.detail)}
-          on:rename={(e) => dispatch("rename-note", e.detail)}
-          on:reparent={(e) => dispatch("reparent-note", e.detail)}
-        />
+        <div class="trash-hint">See the Trash panel in the main area.</div>
       {/if}
-    {:else if view === "pdfs"}
-      <PdfList
-        {pdfs}
-        selectedId={selectedPdfId}
-        on:select={(e) => dispatch("select-pdf", e.detail)}
-        on:add-file={() => dispatch("add-pdf-file")}
-        on:add-url={() => dispatch("add-pdf-url")}
-        on:delete={(e) => dispatch("delete-pdf", e.detail)}
-        on:rename={(e) => dispatch("rename-pdf", e.detail)}
-      />
-    {:else}
-      <div class="trash-hint">See the Trash panel in the main area.</div>
-    {/if}
+    </div>
   </div>
 </aside>
 
@@ -115,41 +149,57 @@
     min-width: 260px;
     border-right: 1px solid var(--border);
     display: flex;
-    flex-direction: column;
     height: 100vh;
   }
-  .top-row {
+  .rail {
+    width: 40px;
+    min-width: 40px;
+    background: var(--bg-alt);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 10px 0;
+    gap: 4px;
+  }
+  .rail button {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    line-height: 1;
     display: flex;
     align-items: center;
-    border-bottom: 1px solid var(--border);
+    justify-content: center;
   }
-  .tabs {
+  .rail button:hover {
+    color: var(--text);
+  }
+  .rail button.active {
+    background: var(--accent);
+    color: white;
+  }
+  .rail .spacer {
+    flex: 1;
+  }
+  .panel {
+    flex: 1;
+    min-width: 0;
     display: flex;
-    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
   }
-  .tabs button {
-    flex: 1;
-    padding: 12px 4px;
-    background: none;
-    border: none;
-    font-size: 12px;
-    font-weight: 600;
+  .panel-header {
+    padding: 12px 12px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
     color: var(--text-muted);
-    border-bottom: 2px solid transparent;
-  }
-  .tabs button.active {
-    color: var(--text);
-    border-bottom-color: var(--accent);
-  }
-  .icon-btn {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: 15px;
-    padding: 8px;
-  }
-  .icon-btn:hover {
-    color: var(--text);
+    border-bottom: 1px solid var(--border);
   }
   .content {
     flex: 1;
@@ -163,24 +213,16 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    flex-shrink: 0;
   }
-  .tag-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .tag-pill {
-    font-size: 10px;
-    padding: 2px 8px;
-    border-radius: 10px;
+  .tag-select {
+    width: 100%;
+    font-size: 12px;
+    padding: 4px 6px;
+    border-radius: 6px;
     border: 1px solid var(--border);
     background: var(--bg);
-    color: var(--text-muted);
-  }
-  .tag-pill.active {
-    background: var(--accent);
-    color: white;
-    border-color: var(--accent);
+    color: var(--text);
   }
   .trash-hint {
     padding: 16px;
