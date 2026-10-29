@@ -88,11 +88,11 @@
     "&": { flex: "1", minHeight: "0", backgroundColor: "var(--bg)", color: "var(--text)", fontSize: "14px" },
     "&.cm-focused": { outline: "none" },
     ".cm-scroller": {
-      fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+      fontFamily: "var(--editor-font)",
       lineHeight: "1.6",
       overflow: "auto",
     },
-    ".cm-content": { padding: "16px 28px 40px", caretColor: "var(--text)", maxWidth: "860px" },
+    ".cm-content": { padding: "16px 28px 40px", caretColor: "var(--text)", maxWidth: "calc(var(--measure) + 56px)" },
     ".cm-line": { padding: "0" },
     ".cm-cursor": { borderLeftColor: "var(--text)" },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {

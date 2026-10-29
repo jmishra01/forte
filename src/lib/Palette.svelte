@@ -1,14 +1,22 @@
+<script lang="ts" context="module">
+  /** An action offered when the query starts with ">". */
+  export type Command = { label: string; hint?: string; run: () => void };
+</script>
+
 <script lang="ts">
   import { createEventDispatcher, onMount, tick } from "svelte";
   import { api, dirOf, nameOf, type Hit } from "./api";
 
   /** All note paths, for matching by name. */
   export let notes: string[];
+  export let commands: Command[] = [];
+  /** Starting text, e.g. ">" to open in command mode. */
+  export let initial = "";
 
   type Item = { path: string; line?: number; text?: string };
 
-  const dispatch = createEventDispatcher<{ choose: Item; close: void }>();
-  let query = "";
+  const dispatch = createEventDispatcher<{ choose: Item; run: Command; close: void }>();
+  let query = initial;
   let hits: Hit[] = [];
   let index = 0;
   let input: HTMLInputElement;
@@ -16,7 +24,9 @@
   let searchTimer: ReturnType<typeof setTimeout>;
   let searchId = 0;
 
-  $: q = query.trim().toLowerCase();
+  $: commandMode = query.startsWith(">");
+  $: q = (commandMode ? query.slice(1) : query).trim().toLowerCase();
+  $: matchingCommands = commandMode ? commands.filter((c) => c.label.toLowerCase().includes(q)) : [];
   // Name matches first (prefix matches before others), then lines that contain the text.
   $: byName = q
     ? notes
@@ -24,9 +34,10 @@
         .sort((a, b) => rank(a) - rank(b) || nameOf(a).localeCompare(nameOf(b)))
         .slice(0, 20)
     : notes.slice(0, 20);
-  $: items = [...byName.map((path): Item => ({ path })), ...hits] as Item[];
-  $: if (index >= items.length) index = Math.max(0, items.length - 1);
-  $: search(q);
+  $: items = commandMode ? [] : ([...byName.map((path): Item => ({ path })), ...hits] as Item[]);
+  $: count = commandMode ? matchingCommands.length : items.length;
+  $: if (index >= count) index = Math.max(0, count - 1);
+  $: search(commandMode ? "" : q);
 
   const rank = (p: string) => (nameOf(p).toLowerCase().startsWith(q) ? 0 : 1);
 
@@ -44,8 +55,8 @@
   }
 
   async function move(by: number) {
-    if (!items.length) return;
-    index = (index + by + items.length) % items.length;
+    if (!count) return;
+    index = (index + by + count) % count;
     await tick();
     list?.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
   }
@@ -57,6 +68,9 @@
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       move(-1);
+    } else if (e.key === "Enter" && commandMode && matchingCommands[index]) {
+      e.preventDefault();
+      dispatch("run", matchingCommands[index]);
     } else if (e.key === "Enter" && items[index]) {
       e.preventDefault();
       dispatch("choose", items[index]);
@@ -81,7 +95,10 @@
     return out;
   }
 
-  onMount(() => input.focus());
+  onMount(() => {
+    input.focus();
+    input.setSelectionRange(query.length, query.length);
+  });
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
@@ -91,32 +108,49 @@
       bind:this={input}
       bind:value={query}
       on:keydown={onKey}
-      placeholder="Search note names and text…"
+      placeholder="Search notes, or type > for commands"
       spellcheck="false"
     />
     <ul bind:this={list} role="listbox">
-      {#each items as item, i (item.path + ":" + (item.line ?? ""))}
-        {#if i === byName.length && hits.length}<li class="group" role="presentation">In note text</li>{/if}
-        <li
-          role="option"
-          aria-selected={i === index}
-          class:sel={i === index}
-          on:mousemove={() => (index = i)}
-          on:click={() => dispatch("choose", item)}
-        >
-          <span class="name">
-            {#each parts(nameOf(item.path), item.line ? "" : q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
-          </span>
-          {#if dirOf(item.path)}<span class="where">{dirOf(item.path)}</span>{/if}
-          {#if item.text}
-            <span class="text">
-              {#each parts(item.text, q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
-            </span>
-          {/if}
-        </li>
+      {#if commandMode}
+        {#each matchingCommands as cmd, i (cmd.label)}
+          <li
+            role="option"
+            aria-selected={i === index}
+            class:sel={i === index}
+            on:mousemove={() => (index = i)}
+            on:click={() => dispatch("run", cmd)}
+          >
+            <span class="name">{#each parts(cmd.label, q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}</span>
+            {#if cmd.hint}<span class="where">{cmd.hint}</span>{/if}
+          </li>
+        {:else}
+          <li class="none">No matching commands</li>
+        {/each}
       {:else}
-        <li class="none">No matches</li>
-      {/each}
+        {#each items as item, i (item.path + ":" + (item.line ?? ""))}
+          {#if i === byName.length && hits.length}<li class="group" role="presentation">In note text</li>{/if}
+          <li
+            role="option"
+            aria-selected={i === index}
+            class:sel={i === index}
+            on:mousemove={() => (index = i)}
+            on:click={() => dispatch("choose", item)}
+          >
+            <span class="name">
+              {#each parts(nameOf(item.path), item.line ? "" : q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
+            </span>
+            {#if dirOf(item.path)}<span class="where">{dirOf(item.path)}</span>{/if}
+            {#if item.text}
+              <span class="text">
+                {#each parts(item.text, q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
+              </span>
+            {/if}
+          </li>
+        {:else}
+          <li class="none">No matches</li>
+        {/each}
+      {/if}
     </ul>
   </div>
 </div>

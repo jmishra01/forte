@@ -9,16 +9,18 @@ let nextId = 0;
  * The `<pre>` element itself is kept (only its contents change) because
  * Svelte's {@html} block still owns it and removes it on the next render.
  */
-export async function renderDiagrams(root: HTMLElement) {
+export async function renderDiagrams(root: HTMLElement, dark: boolean) {
   const blocks = Array.from(root.querySelectorAll<HTMLElement>("pre > code.language-mermaid"));
   if (blocks.length === 0) return;
 
-  const theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "default";
+  const theme = dark ? "dark" : "default";
   const { default: mermaid } = await import("mermaid");
   mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme });
 
   for (const code of blocks) {
-    const pre = code.parentElement!;
+    // Already drawn by an overlapping call (e.g. a theme change mid-render).
+    const pre = code.parentElement;
+    if (!pre) continue;
     const source = code.textContent ?? "";
     const key = theme + "\n" + source;
     let svg = cache.get(key);
