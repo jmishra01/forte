@@ -1,11 +1,34 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from "svelte";
+  import { api } from "./api";
   import type { Settings } from "./settings";
 
   export let settings: Settings;
+  /** Whether an API key is in the keychain. */
+  export let hasKey = false;
 
-  const dispatch = createEventDispatcher<{ change: Settings; close: void }>();
+  const dispatch = createEventDispatcher<{ change: Settings; keyChanged: boolean; close: void }>();
   let dialog: HTMLElement;
+  let keyInput = "";
+  let keyError = "";
+
+  async function saveKey() {
+    keyError = "";
+    try {
+      await api.aiSetKey(keyInput);
+      keyInput = "";
+      hasKey = true;
+      dispatch("keyChanged", true);
+    } catch (e) {
+      keyError = String(e);
+    }
+  }
+
+  async function removeKey() {
+    await api.aiClearKey().catch((e) => (keyError = String(e)));
+    hasKey = false;
+    dispatch("keyChanged", false);
+  }
 
   function set<K extends keyof Settings>(key: K, value: Settings[K]) {
     settings = { ...settings, [key]: value };
@@ -84,6 +107,37 @@
       {"{{title}}"}, {"{{date}}"} and {"{{time}}"} are filled in.
     </p>
 
+    <h3>Sync</h3>
+    <label class="check">
+      <input type="checkbox" checked={settings.gitAutoSync} on:change={(e) => set("gitAutoSync", e.currentTarget.checked)} />
+      <span>Sync with Git every 5 minutes</span>
+    </label>
+    <p class="hint">Only when the notes folder is a Git repository. Uses your computer's own Git login.</p>
+
+    <h3>AI help</h3>
+    <label class="check">
+      <input type="checkbox" checked={settings.aiEnabled} on:change={(e) => set("aiEnabled", e.currentTarget.checked)} />
+      <span>Turn on AI help</span>
+    </label>
+    {#if settings.aiEnabled}
+      {#if hasKey}
+        <div class="key">
+          <span>API key saved in your system keychain.</span>
+          <button class="link" on:click={removeKey}>Remove</button>
+        </div>
+      {:else}
+        <form class="key" on:submit|preventDefault={saveKey}>
+          <input type="password" bind:value={keyInput} placeholder="Anthropic API key (sk-ant-…)" autocomplete="off" />
+          <button type="submit" disabled={!keyInput.trim()}>Save</button>
+        </form>
+      {/if}
+      {#if keyError}<p class="error">{keyError}</p>{/if}
+      <p class="hint">
+        Uses your own key from console.anthropic.com, billed to your account. A note (or, for questions, the
+        notes that best match) is sent to Anthropic only when you ask for help.
+      </p>
+    {/if}
+
     <div class="actions"><button on:click={() => dispatch("close")}>Done</button></div>
   </div>
 </div>
@@ -132,6 +186,43 @@
     background: var(--bg);
     color: var(--text);
     font: inherit;
+  }
+  h3 {
+    margin: 18px 0 2px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .key {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+  }
+  .key span {
+    flex: 1;
+  }
+  .key input {
+    flex: 1;
+    width: auto !important;
+  }
+  .key button {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+  }
+  .key button.link {
+    border: none;
+    color: var(--danger);
+  }
+  .error {
+    color: var(--danger);
+    margin: 4px 0;
   }
   .hint {
     margin: 4px 0 0;

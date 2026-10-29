@@ -3,7 +3,7 @@
   import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import { api, dirOf, nameOf, type Entry, type NoteInfo } from "./lib/api";
+  import { api, dirOf, nameOf, type Conflict, type Entry, type GitStatus, type NoteInfo } from "./lib/api";
   import { relativeHref, renderMarkdown, resolveLink, resolveRelative } from "./lib/markdown";
   import { backlinks, linkFor, rewriteLinks } from "./lib/links";
   import Tree from "./lib/Tree.svelte";
@@ -14,6 +14,12 @@
   import { applySettings, defaults, isDark, withDefaults, type Settings } from "./lib/settings";
   import { expandTemplate, isoDate } from "./lib/templates";
   import { exportPage } from "./lib/exportPage";
+  import Trash from "./lib/Trash.svelte";
+  import Conflicts from "./lib/Conflicts.svelte";
+  import AiPanel from "./lib/AiPanel.svelte";
+  import { hasMarkers, resolveMarkers, type Side } from "./lib/mergeMarkers";
+  import { findUpdate, installUpdate } from "./lib/updates";
+  import type { Update } from "@tauri-apps/plugin-updater";
   import Editor, { type LinkOption } from "./lib/Editor.svelte";
   import { renderDiagrams } from "./lib/diagrams";
 
@@ -37,6 +43,17 @@
   /** When set, the sidebar lists notes with this tag (or a tag nested under it). */
   let tagFilter: string | null = null;
   let settings: Settings = defaults;
+  let trashOpen = false;
+  let conflictsOpen = false;
+  let conflicts: Conflict[] = [];
+  let git: GitStatus | null = null;
+  let syncing = false;
+  let aiOpen = false;
+  let aiHasKey = false;
+  let update: Update | null = null;
+  let installing = false;
+  /** On narrow (phone) screens the note list and the note take turns; this shows the list. */
+  let showList = false;
   let systemDark = matchMedia("(prefers-color-scheme: dark)").matches;
   let index: NoteInfo[] = [];
   /** Notes visited, for back/forward; `place` is the current position in it. */
@@ -60,7 +77,8 @@
   $: tagCounts = countTags(index);
   $: tagged = tagFilter ? taggedNotes(tagFilter, index) : [];
   $: templates = notes.filter((p) => settings.templatesFolder && p.startsWith(settings.templatesFolder + "/"));
-  $: commands = buildCommands(current, mode, templates, settings, focusMode);
+  $: commands = buildCommands(current, mode, templates, settings, focusMode, git, update);
+  $: markers = !!current && hasMarkers(content);
   $: incoming = current ? backlinks(current, index, notes) : [];
   $: canBack = history.slice(0, place).some((p) => notes.includes(p));
   $: canForward = history.slice(place + 1).some((p) => notes.includes(p));
@@ -91,7 +109,19 @@
   }
 
   async function refresh() {
-    [tree, index] = await Promise.all([run(api.listTree).then((t) => t ?? []), api.noteIndex().catch(() => index)]);
+    [tree, index, conflicts] = await Promise.all([
+      run(api.listTree).then((t) => t ?? []),
+      api.noteIndex().catch(() => index),
+      api.findConflicts().catch(() => conflicts),
+    ]);
+    refreshGit();
+  }
+
+  // Git status runs a process; on a burst of changes, ask once it settles.
+  let gitTimer: ReturnType<typeof setTimeout>;
+  function refreshGit() {
+    clearTimeout(gitTimer);
+    gitTimer = setTimeout(async () => (git = await api.gitStatus().catch(() => null)), 1000);
   }
 
   // --- saving ---------------------------------------------------------------
@@ -188,6 +218,7 @@
     saved = text;
     mode = line ? "edit" : forceMode ?? (text.trim() ? "preview" : "edit");
     expandTo(path);
+    showList = false;
     if (!fromHistory && history[place] !== path) {
       history = [...history.slice(0, place + 1), path];
       place = history.length - 1;
@@ -568,6 +599,8 @@
     templates: string[],
     settings: Settings,
     focusMode: boolean,
+    git: GitStatus | null,
+    update: Update | null,
   ): Command[] {
     const list: Command[] = [
       { label: "New note", hint: "⌘N", run: () => newNote(current ? dirOf(current) : "") },
@@ -579,6 +612,13 @@
         run: () => updateSettings({ ...settings, showOutline: !settings.showOutline }),
       },
       { label: "Settings", hint: "⌘,", run: () => (settingsOpen = true) },
+      { label: "Show trash", run: () => (trashOpen = true) },
+      { label: "Show sync conflicts", run: () => (conflictsOpen = true) },
+      git?.isRepo
+        ? { label: "Sync notes with Git", run: syncNow }
+        : { label: "Keep a Git history of these notes", run: startGit },
+      { label: update ? `Install update ${update.version}` : "Check for updates", run: () => checkForUpdate(true) },
+      ...(settings.aiEnabled ? [{ label: "AI help", run: () => (aiOpen = true) }] : []),
       ...templates.map((t) => ({ label: `New note from template: ${nameOf(t)}`, run: () => newFromTemplate(t) })),
     ];
     if (current) {
@@ -613,6 +653,75 @@
     settingsTimer = setTimeout(() => run(() => api.setSettings(settings)), 300);
   }
 
+  // --- sync ------------------------------------------------------------------
+
+  async function syncNow() {
+    if (syncing) return;
+    syncing = true;
+    await flush();
+    const when = new Date().toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    const result = await run(() => api.gitSync(`Notes from Forte, ${when}`));
+    syncing = false;
+    if (!result) return;
+    git = result;
+    await refresh();
+    if (result.conflicted.length) {
+      flash(`${result.conflicted.length} note${result.conflicted.length === 1 ? "" : "s"} changed in both places. Fix them, then sync again.`);
+      conflictsOpen = true;
+    } else {
+      flash("Notes synced", "info");
+    }
+  }
+
+  function syncTitle(g: GitStatus) {
+    const parts = [
+      g.changes && `${g.changes} changed`,
+      g.ahead && `${g.ahead} to send`,
+      g.behind && `${g.behind} to receive`,
+      !g.hasUpstream && "no remote set up",
+    ].filter(Boolean);
+    return `Sync with Git (${g.branch ?? "no branch"})${parts.length ? ": " + parts.join(", ") : ""}`;
+  }
+
+  async function startGit() {
+    const result = await run(api.gitInit);
+    if (!result) return;
+    git = result;
+    flash("Git history started. Add a remote to sync between computers.", "info");
+  }
+
+  function keepSide(side: Side) {
+    content = resolveMarkers(content, side);
+    scheduleSave();
+  }
+
+  let autoSync: ReturnType<typeof setInterval> | undefined;
+  $: {
+    clearInterval(autoSync);
+    if (settings.gitAutoSync && git?.isRepo) {
+      autoSync = setInterval(() => {
+        if (!syncing && !git?.conflicted.length) syncNow();
+      }, 5 * 60_000);
+    }
+  }
+  onDestroy(() => clearInterval(autoSync));
+
+  // --- updates ---------------------------------------------------------------
+
+  async function checkForUpdate(manual = false) {
+    if (manual && update) return applyUpdate();
+    update = await findUpdate();
+    if (manual && !update) flash("Forte is up to date", "info");
+  }
+
+  async function applyUpdate() {
+    if (!update || installing) return;
+    installing = true;
+    await flush();
+    await run(() => installUpdate(update!));
+    installing = false;
+  }
+
   const darkQuery = matchMedia("(prefers-color-scheme: dark)");
   const onSystemTheme = () => (systemDark = darkQuery.matches);
   darkQuery.addEventListener("change", onSystemTheme);
@@ -623,12 +732,14 @@
     applySettings(settings);
     vault = (await run(api.getVault)) ?? "";
     await refresh();
+    aiHasKey = await api.aiHasKey().catch(() => false);
+    setTimeout(() => checkForUpdate(), 4000);
   });
 </script>
 
 <svelte:window on:keydown={onKey} on:beforeunload={flush} />
 
-<div class="app" class:focus={focusMode}>
+<div class="app" class:focus={focusMode} class:show-list={showList || !current}>
   <aside>
     <div class="side-head">
       <input class="search" placeholder="Filter by name" bind:value={filter} on:input={() => (tagFilter = null)} />
@@ -715,8 +826,31 @@
       </section>
     {/if}
 
+    {#if conflicts.length}
+      <button class="notice warn" on:click={() => (conflictsOpen = true)}>
+        ⚠ {conflicts.length} sync conflict{conflicts.length === 1 ? "" : "s"}
+      </button>
+    {/if}
+    {#if update}
+      <button class="notice" disabled={installing} on:click={applyUpdate}>
+        {installing ? "Installing update…" : `⬆ Update to ${update.version}`}
+      </button>
+    {/if}
+
     <div class="side-foot">
       <button class="vault" title={vault} on:click={chooseVault}>📁 {nameOf(vault) || "Notes folder"}</button>
+      {#if git?.isRepo}
+        <button
+          class="gear sync"
+          disabled={syncing}
+          title={syncTitle(git)}
+          on:click={syncNow}
+        >{syncing ? "…" : "⟳"}{#if git.changes || git.ahead || git.behind}<span class="dot" />{/if}</button>
+      {/if}
+      {#if settings.aiEnabled}
+        <button class="gear" class:on={aiOpen} title="AI help" on:click={() => (aiOpen = !aiOpen)}>✦</button>
+      {/if}
+      <button class="gear" title="Trash" on:click={() => (trashOpen = true)}>🗑</button>
       <button class="gear" title="Settings (⌘,)" on:click={() => (settingsOpen = true)}>⚙</button>
     </div>
   </aside>
@@ -724,6 +858,7 @@
   <main>
     {#if current}
       <header>
+        <button class="list-toggle" title="Notes" on:click={() => (showList = true)}>☰</button>
         <div class="nav">
           <button title="Back (⌘[)" disabled={!canBack} on:click={() => go(-1)}>‹</button>
           <button title="Forward (⌘])" disabled={!canForward} on:click={() => go(1)}>›</button>
@@ -737,6 +872,14 @@
         />
       </header>
       {#if dirOf(current)}<div class="crumb">{dirOf(current)}</div>{/if}
+      {#if markers}
+        <div class="banner">
+          <span>This note has changes from two places (between <code>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</code> and <code>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</code>). Edit it, or keep:</span>
+          <button on:click={() => keepSide("mine")}>This computer's</button>
+          <button on:click={() => keepSide("theirs")}>The other version</button>
+          <button on:click={() => keepSide("both")}>Both</button>
+        </div>
+      {/if}
 
       <div class="body">
         {#if mode === "edit"}
@@ -763,7 +906,21 @@
             </article>
           {/key}
         {/if}
-        {#if settings.showOutline && !focusMode && outline.length >= 2}
+        {#if aiOpen && settings.aiEnabled && !focusMode}
+          <AiPanel
+            {current}
+            {notes}
+            hasKey={aiHasKey}
+            on:close={() => (aiOpen = false)}
+            on:open={(e) => openNote(e.detail)}
+            on:settings={() => (settingsOpen = true)}
+            on:insert={async (e) => {
+              if (mode !== "edit") await startEditing();
+              await tick();
+              editor?.insert("\n" + e.detail.trim() + "\n", content.length);
+            }}
+          />
+        {:else if settings.showOutline && !focusMode && outline.length >= 2}
           <nav class="outline" aria-label="Outline">
             <h2>Outline</h2>
             {#each outline as h (h.line)}
@@ -833,7 +990,41 @@
   {/if}
 
   {#if settingsOpen}
-    <SettingsDialog {settings} on:change={(e) => updateSettings(e.detail)} on:close={() => (settingsOpen = false)} />
+    <SettingsDialog
+      {settings}
+      hasKey={aiHasKey}
+      on:change={(e) => updateSettings(e.detail)}
+      on:keyChanged={(e) => (aiHasKey = e.detail)}
+      on:close={() => (settingsOpen = false)}
+    />
+  {/if}
+
+  {#if trashOpen}
+    <Trash
+      on:close={() => (trashOpen = false)}
+      on:error={(e) => flash(e.detail)}
+      on:restored={async (e) => {
+        await refresh();
+        flash(`Restored to ${e.detail}`, "info");
+      }}
+    />
+  {/if}
+
+  {#if conflictsOpen}
+    <Conflicts
+      {conflicts}
+      on:close={() => (conflictsOpen = false)}
+      on:error={(e) => flash(e.detail)}
+      on:open={(e) => {
+        conflictsOpen = false;
+        openNote(e.detail, "edit");
+      }}
+      on:settled={async (e) => {
+        await refresh();
+        if (!conflicts.length) conflictsOpen = false;
+        await openNote(e.detail);
+      }}
+    />
   {/if}
 </div>
 
@@ -1013,6 +1204,99 @@
   .tag-chip.active {
     background: var(--active);
     color: var(--accent);
+  }
+  .notice {
+    margin: 0 8px 6px;
+    padding: 6px 10px;
+    border: none;
+    border-radius: 6px;
+    background: var(--active);
+    color: var(--accent);
+    text-align: left;
+    font-size: 12px;
+  }
+  .notice.warn {
+    background: color-mix(in srgb, var(--danger) 15%, transparent);
+    color: var(--danger);
+  }
+  .gear.sync {
+    position: relative;
+  }
+  .gear .dot {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .gear.on {
+    color: var(--accent);
+  }
+  .banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 28px 0;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    font-size: 12px;
+  }
+  .banner span {
+    flex: 1 1 260px;
+  }
+  .banner button {
+    padding: 3px 9px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .list-toggle {
+    display: none;
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 18px;
+  }
+  /* Phones: the note list and the note take turns filling the screen. */
+  @media (max-width: 700px) {
+    aside {
+      width: 100%;
+    }
+    .app:not(.show-list) aside,
+    .app.show-list main {
+      display: none;
+    }
+    .list-toggle {
+      display: block;
+    }
+    header {
+      padding: 10px 12px 0;
+    }
+    .crumb,
+    .banner {
+      margin-left: 12px;
+      margin-right: 12px;
+      padding-left: 12px;
+    }
+    .preview {
+      padding: 8px 16px 32px;
+    }
+    .backlinks {
+      padding: 10px 10px 14px;
+    }
+    .body :global(.ai) {
+      position: absolute;
+      inset: 0;
+      width: auto;
+      background: var(--bg);
+      z-index: 4;
+    }
   }
   .side-foot {
     display: flex;
