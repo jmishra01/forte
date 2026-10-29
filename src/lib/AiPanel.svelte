@@ -2,6 +2,8 @@
   import { createEventDispatcher, onDestroy } from "svelte";
   import { api, nameOf, type AiTask } from "./api";
   import { renderMarkdown, resolveLink } from "./markdown";
+  import IconButton from "./IconButton.svelte";
+  import { Close } from "./icons";
 
   /** The open note, if any (summaries and link ideas need one). */
   export let current: string | null;
@@ -64,7 +66,7 @@
 <aside class="ai" aria-label="AI help">
   <header>
     <h2>AI help</h2>
-    <button class="x" title="Close" on:click={() => dispatch("close")}>×</button>
+    <IconButton size="sm" icon={Close} label="Close AI help" on:click={() => dispatch("close")} />
   </header>
 
   {#if !hasKey}
@@ -169,13 +171,6 @@
     background: var(--accent);
     color: white;
     align-self: flex-start;
-  }
-  button.x {
-    border: none;
-    background: none;
-    color: var(--muted);
-    font-size: 18px;
-    padding: 0 6px;
   }
   .answer {
     font-size: 13px;

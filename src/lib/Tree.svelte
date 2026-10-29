@@ -1,15 +1,69 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
   import type { Entry } from "./api";
+  import IconButton from "./IconButton.svelte";
+  import { Collapsed, Expanded, NewFolder, NewNote, Rename, Trash } from "./icons";
 
   export let entries: Entry[];
   export let expanded: Set<string>;
   export let current: string | null;
   export let renaming: string | null;
   export let depth = 0;
+  /** The one row reachable with Tab (the open note, or the first row); arrow keys move from there. */
+  export let focusable: string | null = null;
 
   const dispatch = createEventDispatcher();
   let dropTarget: string | null = null;
+
+  const parentOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
+
+  /** Arrow keys move between rows; Enter opens; F2 renames; Delete moves to the trash. */
+  function onRowKey(e: KeyboardEvent, entry: Entry) {
+    if (e.target !== e.currentTarget) return; // typing in the rename box
+    const row = e.currentTarget as HTMLElement;
+    const rows = Array.from(row.closest('[role="tree"]')?.querySelectorAll<HTMLElement>(".row") ?? []);
+    const at = rows.indexOf(row);
+    const focus = (r: HTMLElement | undefined) => r && (e.preventDefault(), r.focus());
+    const open = expanded.has(entry.path);
+    switch (e.key) {
+      case "ArrowDown":
+        return focus(rows[at + 1]);
+      case "ArrowUp":
+        return focus(rows[at - 1]);
+      case "Home":
+        return focus(rows[0]);
+      case "End":
+        return focus(rows[rows.length - 1]);
+      case "ArrowRight":
+        e.preventDefault();
+        if (entry.isDir && !open) dispatch("toggle", entry.path);
+        else if (entry.isDir) focus(rows[at + 1]);
+        return;
+      case "ArrowLeft":
+        e.preventDefault();
+        if (entry.isDir && open) dispatch("toggle", entry.path);
+        else focus(rows.find((r) => r.dataset.path === parentOf(entry.path)));
+        return;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        return dispatch(entry.isDir ? "toggle" : e.metaKey || e.ctrlKey ? "openTab" : "open", entry.path);
+      case "F2":
+        e.preventDefault();
+        return dispatch("startRename", entry.path);
+      case "Delete":
+      case "Backspace":
+        if (e.key === "Backspace" && !(e.metaKey || e.ctrlKey)) return;
+        e.preventDefault();
+        return dispatch("delete", entry.path);
+    }
+  }
+
+  /** A row button's click handler: it acts on the entry without also opening the row. */
+  const act = (event: string, path: string) => (e: MouseEvent) => {
+    e.stopPropagation();
+    dispatch(event, path);
+  };
 
   function focusSelect(el: HTMLInputElement) {
     el.focus();
@@ -43,7 +97,10 @@
     draggable={renaming !== entry.path}
     role="treeitem"
     aria-selected={entry.path === current}
-    tabindex="-1"
+    aria-expanded={entry.isDir ? expanded.has(entry.path) : undefined}
+    aria-level={depth + 1}
+    data-path={entry.path}
+    tabindex={entry.path === focusable ? 0 : -1}
     on:dragstart={(e) => e.dataTransfer?.setData("text/plain", entry.path)}
     on:dragover={(e) => {
       if (!entry.isDir) return;
@@ -52,10 +109,13 @@
     }}
     on:dragleave={() => (dropTarget = null)}
     on:drop={(e) => entry.isDir && onDrop(e, entry.path)}
-    on:click={() => dispatch(entry.isDir ? "toggle" : "open", entry.path)}
-    on:keydown={() => {}}
+    on:click={(e) => dispatch(entry.isDir ? "toggle" : e.metaKey || e.ctrlKey ? "openTab" : "open", entry.path)}
+    on:auxclick={(e) => !entry.isDir && e.button === 1 && dispatch("openTab", entry.path)}
+    on:keydown={(e) => onRowKey(e, entry)}
   >
-    <span class="icon">{entry.isDir ? (expanded.has(entry.path) ? "▾" : "▸") : ""}</span>
+    <span class="icon" aria-hidden="true">
+      {#if entry.isDir}<svelte:component this={expanded.has(entry.path) ? Expanded : Collapsed} size={14} strokeWidth={2} />{/if}
+    </span>
     {#if renaming === entry.path}
       <input
         class="rename"
@@ -69,11 +129,11 @@
       <span class="name" class:folder={entry.isDir}>{entry.name}</span>
       <span class="actions">
         {#if entry.isDir}
-          <button title="New note" on:click|stopPropagation={() => dispatch("newNote", entry.path)}>+</button>
-          <button title="New folder" on:click|stopPropagation={() => dispatch("newFolder", entry.path)}>⊞</button>
+          <IconButton size="sm" icon={NewNote} label="New note in {entry.name}" on:click={act("newNote", entry.path)} />
+          <IconButton size="sm" icon={NewFolder} label="New folder in {entry.name}" on:click={act("newFolder", entry.path)} />
         {/if}
-        <button title="Rename" on:click|stopPropagation={() => dispatch("startRename", entry.path)}>✎</button>
-        <button title="Delete" on:click|stopPropagation={() => dispatch("delete", entry.path)}>×</button>
+        <IconButton size="sm" icon={Rename} label="Rename {entry.name}" on:click={act("startRename", entry.path)} />
+        <IconButton size="sm" icon={Trash} label="Move {entry.name} to the trash" on:click={act("delete", entry.path)} />
       </span>
     {/if}
   </div>
@@ -83,8 +143,10 @@
       {expanded}
       {current}
       {renaming}
+      {focusable}
       depth={depth + 1}
       on:open
+      on:openTab
       on:toggle
       on:move
       on:rename
@@ -118,10 +180,13 @@
     outline: 1px dashed var(--accent);
   }
   .icon {
-    width: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
     flex-shrink: 0;
     color: var(--muted);
-    font-size: 10px;
   }
   .name {
     flex: 1;
@@ -134,23 +199,16 @@
   }
   .actions {
     display: none;
-    gap: 2px;
+    align-items: center;
+    gap: 1px;
   }
-  .row:hover .actions {
+  .row:hover .actions,
+  .row:focus-within .actions {
     display: flex;
   }
-  .actions button {
-    border: none;
-    background: none;
-    color: var(--muted);
-    padding: 0 4px;
-    font-size: 13px;
-    line-height: 20px;
-    border-radius: 3px;
-  }
-  .actions button:hover {
-    color: var(--text);
-    background: var(--border);
+  .row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
   .rename {
     flex: 1;
