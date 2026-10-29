@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { api, dirOf, nameOf, type Entry } from "./lib/api";
@@ -34,12 +34,16 @@
     return entries.flatMap((e) => (e.isDir ? flatten(e.children) : [e.path]));
   }
 
+  function flash(message: string) {
+    error = message;
+    setTimeout(() => (error = ""), 4000);
+  }
+
   async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
     try {
       return await fn();
     } catch (e) {
-      error = String(e);
-      setTimeout(() => (error = ""), 4000);
+      flash(String(e));
     }
   }
 
@@ -51,6 +55,10 @@
 
   let saveTimer: ReturnType<typeof setTimeout>;
   let pending: { path: string; content: string } | null = null;
+  /** What we believe is on disk for `current`: the text last read or written. */
+  let saved = "";
+  /** Set while asking how to resolve an outside edit; saving waits until it's answered. */
+  let resolving = false;
 
   function scheduleSave() {
     if (!current) return;
@@ -61,10 +69,55 @@
 
   async function flush() {
     clearTimeout(saveTimer);
-    if (!pending) return;
+    if (!pending || resolving) return;
     const { path, content } = pending;
     pending = null;
+    if (path === current) saved = content;
     await run(() => api.writeNote(path, content));
+  }
+
+  // --- changes made outside the app ------------------------------------------
+
+  async function onDiskChange() {
+    await refresh();
+    const path = current;
+    if (!path || resolving) return;
+    let disk: string;
+    try {
+      disk = await api.readNote(path);
+    } catch {
+      // Moved, renamed or deleted elsewhere. Unsaved edits stay open; the next save recreates the file.
+      if (path === current && content === saved) {
+        current = null;
+        flash(`"${nameOf(path)}" was moved or deleted outside Forte`);
+      }
+      return;
+    }
+    if (path !== current || disk === saved) return; // our own save, or nothing new
+    if (content === saved) {
+      content = saved = disk; // no local edits: just take the new version
+      return;
+    }
+    resolving = true;
+    let loadDisk = false; // if the dialog fails, keep what the user typed
+    try {
+      loadDisk = await ask(
+        `"${nameOf(path)}" was changed outside Forte while you were editing it.\n\nLoad the version on disk? Your unsaved changes will be lost.`,
+        { title: "Note changed on disk", kind: "warning", okLabel: "Load from disk", cancelLabel: "Keep mine" },
+      );
+    } catch {
+    } finally {
+      resolving = false;
+    }
+    if (path !== current) return;
+    saved = disk;
+    if (loadDisk) {
+      clearTimeout(saveTimer);
+      pending = null;
+      content = disk;
+    } else {
+      scheduleSave();
+    }
   }
 
   // --- notes ----------------------------------------------------------------
@@ -85,6 +138,7 @@
     current = path;
     title = nameOf(path);
     content = text;
+    saved = text;
     mode = forceMode ?? (text.trim() ? "preview" : "edit");
     expandTo(path);
   }
@@ -310,6 +364,9 @@
     scheduleSave();
     tick().then(() => editor.setSelectionRange(s + 2, s + 2));
   }
+
+  const unlisten = api.onVaultChanged(onDiskChange);
+  onDestroy(() => unlisten.then((stop) => stop()));
 
   onMount(async () => {
     vault = (await run(api.getVault)) ?? "";

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export interface Entry {
   name: string;
@@ -18,6 +19,8 @@ export const api = {
   rename: (path: string, name: string) => invoke<string>("rename_entry", { path, name }),
   move: (path: string, dir: string) => invoke<string>("move_entry", { path, dir }),
   remove: (path: string) => invoke<void>("delete_entry", { path }),
+  /** Calls `fn` with the paths that changed on disk, including our own writes. Resolves to an unsubscribe function. */
+  onVaultChanged: (fn: (paths: string[]) => void) => listen<string[]>("vault-changed", (e) => fn(e.payload)),
 };
 
 export function dirOf(path: string): string {

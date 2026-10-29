@@ -1,4 +1,5 @@
 mod vault;
+mod watch;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -22,9 +23,11 @@ pub fn run() {
                 vault::migrate_legacy(cfg.data_dir.as_deref().unwrap_or(&data_dir), &root);
             }
 
+            let watcher = watch::start(app.handle().clone(), &root);
             app.manage(AppState {
                 root: Mutex::new(root),
                 config_path,
+                watcher: Mutex::new(watcher),
             });
             Ok(())
         })
