@@ -14,9 +14,11 @@ export interface Hit {
   text: string;
 }
 
-export interface NoteLinks {
+export interface NoteInfo {
   path: string;
   links: { target: string; line: number; text: string }[];
+  /** Lowercase, without "#". */
+  tags: string[];
 }
 
 export const api = {
@@ -31,7 +33,11 @@ export const api = {
   move: (path: string, dir: string) => invoke<string>("move_entry", { path, dir }),
   remove: (path: string) => invoke<void>("delete_entry", { path }),
   search: (query: string) => invoke<Hit[]>("search_notes", { query }),
-  linkIndex: () => invoke<NoteLinks[]>("link_index"),
+  noteIndex: () => invoke<NoteInfo[]>("note_index"),
+  getSettings: () => invoke<Record<string, unknown> | null>("get_settings"),
+  setSettings: (settings: object) => invoke<void>("set_settings", { settings }),
+  /** Asks where to save and writes the page; resolves to the saved path, or null if cancelled. */
+  exportHtml: (name: string, html: string) => invoke<string | null>("export_html", { name, html }),
   /** Stores `data` under `attachments/` and returns its vault-relative path. */
   saveAttachment: async (name: string, data: Blob) =>
     invoke<string>("save_attachment", new Uint8Array(await data.arrayBuffer()), {

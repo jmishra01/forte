@@ -45,7 +45,10 @@ pub fn run() {
             vault::move_entry,
             vault::delete_entry,
             vault::search_notes,
-            vault::link_index,
+            vault::note_index,
+            vault::get_settings,
+            vault::set_settings,
+            vault::export_html,
             vault::save_attachment,
         ])
         .run(tauri::generate_context!())

@@ -22,6 +22,8 @@ pub struct Config {
     /// Data dir of the pre-rewrite app, only read for migration.
     #[serde(default)]
     pub data_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub settings: serde_json::Value,
 }
 
 impl Config {
@@ -193,8 +195,42 @@ pub fn search_notes(state: State<AppState>, query: String) -> Vec<search::Hit> {
 }
 
 #[tauri::command]
-pub fn link_index(state: State<AppState>) -> Vec<search::NoteLinks> {
-    search::links(&root(&state))
+pub fn note_index(state: State<AppState>) -> Vec<search::NoteInfo> {
+    search::index(&root(&state))
+}
+
+/// UI preferences, kept as an opaque JSON object in the config file.
+#[tauri::command]
+pub fn get_settings(state: State<AppState>) -> serde_json::Value {
+    Config::load(&state.config_path).settings
+}
+
+#[tauri::command]
+pub fn set_settings(state: State<AppState>, settings: serde_json::Value) -> Result<(), String> {
+    let mut cfg = Config::load(&state.config_path);
+    cfg.settings = settings;
+    cfg.save(&state.config_path)
+}
+
+/// Asks where to save, then writes `html` there. Images written as
+/// `src="vault:<path>"` are embedded from the vault. Returns where it was saved,
+/// or None if the user cancelled. The path never comes from the webview.
+#[tauri::command]
+pub async fn export_html(app: AppHandle, name: String, html: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let root = root(&app.state::<AppState>());
+    let Some(target) = app
+        .dialog()
+        .file()
+        .add_filter("Web page", &["html"])
+        .set_file_name(format!("{}.html", clean_name(&name).unwrap_or_else(|_| "Note".into())))
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let target = target.into_path().map_err(|e| e.to_string())?;
+    fs::write(&target, embed_images(&root, &html)).map_err(|e| e.to_string())?;
+    Ok(Some(target.to_string_lossy().into_owned()))
 }
 
 /// Saves the request body (an image pasted or dropped into a note) under
@@ -284,6 +320,44 @@ fn save_attachment_in(root: &Path, name: &str, bytes: &[u8]) -> Result<String, S
     let p = unique_path(&dir, &stem, &ext);
     fs::write(&p, bytes).map_err(|e| e.to_string())?;
     Ok(to_rel(root, &p))
+}
+
+/// Replaces `src="vault:<path>"` with the file's contents as a data URL.
+/// Paths outside the vault, missing files and non-images are left out.
+fn embed_images(root: &Path, html: &str) -> String {
+    const MARK: &str = "src=\"vault:";
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(i) = rest.find(MARK) {
+        out.push_str(&rest[..i]);
+        rest = &rest[i + MARK.len()..];
+        let end = rest.find('"').unwrap_or(rest.len());
+        let rel = percent_decode(&rest[..end]);
+        rest = &rest[(end + 1).min(rest.len())..];
+        out.push_str("src=\"");
+        if let Some(data) = data_url(root, &rel) {
+            out.push_str(&data);
+        }
+        out.push('"');
+    }
+    out.push_str(rest);
+    out
+}
+
+fn data_url(root: &Path, rel: &str) -> Option<String> {
+    use base64::Engine;
+    let p = resolve(root, rel).ok()?;
+    let mime = match p.extension()?.to_str()?.to_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        _ => return None,
+    };
+    let bytes = fs::read(p).ok()?;
+    Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
 fn percent_decode(s: &str) -> String {
@@ -454,6 +528,17 @@ mod tests {
         assert_eq!(percent_decode("caf%C3%A9%20menu.png"), "café menu.png");
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("%zz"), "%zz");
+    }
+
+    #[test]
+    fn export_embeds_vault_images_only() {
+        let (_d, root) = vault();
+        write(&root, "attachments/a b.png", "PNG").unwrap();
+        let html = r#"<img src="vault:attachments/a%20b.png"><img src="vault:../secret.png"><img src="https://x/y.png">"#;
+        assert_eq!(
+            embed_images(&root, html),
+            r#"<img src="data:image/png;base64,UE5H"><img src=""><img src="https://x/y.png">"#
+        );
     }
 
     #[test]

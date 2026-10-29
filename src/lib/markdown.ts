@@ -3,6 +3,7 @@ import DOMPurify from "dompurify";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { dirOf, nameOf } from "./api";
+import { splitFrontMatter } from "./frontmatter";
 
 // Set by render() so the wikilink renderer can mark links to missing notes,
 // and the image renderer can point relative images at files in the vault.
@@ -61,6 +62,24 @@ marked.use({
       },
     },
     {
+      // #tag after whitespace: a letter or _, then letters, digits, _, - or /.
+      name: "tag",
+      level: "inline",
+      start(src: string) {
+        const m = /(^|\s)#[\p{L}_]/u.exec(src);
+        return m ? m.index + m[1].length : undefined;
+      },
+      tokenizer(src: string) {
+        const m = /^#([\p{L}_][\p{L}\p{N}_/-]*)/u.exec(src);
+        if (!m) return undefined;
+        const tag = m[1].replace(/\/+$/, "");
+        return { type: "tag", raw: "#" + tag, tag };
+      },
+      renderer(token) {
+        return `<a href="#" class="tag" data-tag="${escapeHtml(token.tag.toLowerCase())}">#${escapeHtml(token.tag)}</a>`;
+      },
+    },
+    {
       // [[Note]], [[folder/Note]], [[Note|label]]
       name: "wikilink",
       level: "inline",
@@ -81,9 +100,10 @@ marked.use({
   ],
 });
 
-// DOMPurify's default URL check, plus the asset: scheme Tauri serves vault images from.
+// DOMPurify's default URL check, plus asset: (how Tauri serves vault images) and
+// vault: (how exported pages mark images to embed).
 const ALLOWED_URI_REGEXP =
-  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|asset):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|asset|vault):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 
 export function renderMarkdown(
   src: string,
@@ -92,8 +112,25 @@ export function renderMarkdown(
 ): string {
   resolveForRender = resolve;
   imageSrcForRender = imageSrc;
-  const html = marked.parse(src, { async: false }) as string;
+  const { props, body } = splitFrontMatter(src);
+  const html = propertiesHtml(props) + (marked.parse(body, { async: false }) as string);
   return DOMPurify.sanitize(html, { ALLOWED_URI_REGEXP });
+}
+
+/** Front matter as a small table; tags become clickable like inline #tags. */
+function propertiesHtml(props: ReturnType<typeof splitFrontMatter>["props"]) {
+  if (!props.length) return "";
+  const rows = props.map(({ key, value }) => {
+    const items = Array.isArray(value) ? value : [value];
+    const cells = /^tags?$/.test(key)
+      ? items
+          .map((t) => t.replace(/^#/, ""))
+          .map((t) => `<a href="#" class="tag" data-tag="${escapeHtml(t.toLowerCase())}">#${escapeHtml(t)}</a>`)
+          .join(" ")
+      : items.map(escapeHtml).join(", ");
+    return `<tr><th>${escapeHtml(key)}</th><td>${cells}</td></tr>`;
+  });
+  return `<table class="properties">${rows.join("")}</table>`;
 }
 
 /**

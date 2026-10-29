@@ -1,8 +1,8 @@
-import { nameOf, type Hit, type NoteLinks } from "./api";
+import { nameOf, type Hit, type NoteInfo } from "./api";
 import { resolveLink } from "./markdown";
 
 /** Lines in other notes whose `[[links]]` point at `path`. */
-export function backlinks(path: string, index: NoteLinks[], notes: string[]): Hit[] {
+export function backlinks(path: string, index: NoteInfo[], notes: string[]): Hit[] {
   const out: Hit[] = [];
   for (const note of index) {
     if (note.path === path) continue;

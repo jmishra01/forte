@@ -3,11 +3,17 @@
   import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import { api, dirOf, nameOf, type Entry, type NoteLinks } from "./lib/api";
+  import { api, dirOf, nameOf, type Entry, type NoteInfo } from "./lib/api";
   import { relativeHref, renderMarkdown, resolveLink, resolveRelative } from "./lib/markdown";
   import { backlinks, linkFor, rewriteLinks } from "./lib/links";
   import Tree from "./lib/Tree.svelte";
-  import Palette from "./lib/Palette.svelte";
+  import Palette, { type Command } from "./lib/Palette.svelte";
+  import Graph from "./lib/Graph.svelte";
+  import SettingsDialog from "./lib/Settings.svelte";
+  import { headings, type Heading } from "./lib/outline";
+  import { applySettings, defaults, isDark, withDefaults, type Settings } from "./lib/settings";
+  import { expandTemplate, isoDate } from "./lib/templates";
+  import { exportPage } from "./lib/exportPage";
   import Editor, { type LinkOption } from "./lib/Editor.svelte";
   import { renderDiagrams } from "./lib/diagrams";
 
@@ -23,7 +29,16 @@
   let toast: { text: string; kind: "error" | "info" } | null = null;
   let toastTimer: ReturnType<typeof setTimeout>;
   let paletteOpen = false;
-  let index: NoteLinks[] = [];
+  let paletteInitial = "";
+  let settingsOpen = false;
+  let graphOpen = false;
+  let focusMode = false;
+  let tagsOpen = true;
+  /** When set, the sidebar lists notes with this tag (or a tag nested under it). */
+  let tagFilter: string | null = null;
+  let settings: Settings = defaults;
+  let systemDark = matchMedia("(prefers-color-scheme: dark)").matches;
+  let index: NoteInfo[] = [];
   /** Notes visited, for back/forward; `place` is the current position in it. */
   let history: string[] = [];
   let place = -1;
@@ -36,10 +51,16 @@
   $: filtered = filter.trim()
     ? notes.filter((p) => nameOf(p).toLowerCase().includes(filter.trim().toLowerCase()))
     : [];
+  $: dark = isDark(settings, systemDark);
   $: html =
     current && mode === "preview"
       ? renderMarkdown(content, (t: string) => resolveLink(t, current!, notes), imageSrc)
       : "";
+  $: outline = current ? headings(content) : [];
+  $: tagCounts = countTags(index);
+  $: tagged = tagFilter ? taggedNotes(tagFilter, index) : [];
+  $: templates = notes.filter((p) => settings.templatesFolder && p.startsWith(settings.templatesFolder + "/"));
+  $: commands = buildCommands(current, mode, templates, settings, focusMode);
   $: incoming = current ? backlinks(current, index, notes) : [];
   $: canBack = history.slice(0, place).some((p) => notes.includes(p));
   $: canForward = history.slice(place + 1).some((p) => notes.includes(p));
@@ -49,7 +70,7 @@
     const rel = current && resolveRelative(href, current);
     return rel ? convertFileSrc(`${vault}/${rel}`) : href;
   }
-  $: if (html) tick().then(() => previewEl && renderDiagrams(previewEl));
+  $: if (html) tick().then(() => previewEl && renderDiagrams(previewEl, dark));
 
   function flatten(entries: Entry[]): string[] {
     return entries.flatMap((e) => (e.isDir ? flatten(e.children) : [e.path]));
@@ -70,7 +91,7 @@
   }
 
   async function refresh() {
-    [tree, index] = await Promise.all([run(api.listTree).then((t) => t ?? []), api.linkIndex().catch(() => index)]);
+    [tree, index] = await Promise.all([run(api.listTree).then((t) => t ?? []), api.noteIndex().catch(() => index)]);
   }
 
   // --- saving ---------------------------------------------------------------
@@ -228,7 +249,7 @@
   async function relocate(path: string, change: () => Promise<string>) {
     await flush();
     const oldNotes = notes;
-    const oldIndex = await api.linkIndex().catch(() => index);
+    const oldIndex = await api.noteIndex().catch(() => index);
     const to = await run(change);
     if (!to) return;
     repoint(path, to);
@@ -330,6 +351,8 @@
       return;
     }
     e.preventDefault();
+    const tag = a.getAttribute("data-tag");
+    if (tag) return showTag(tag);
     const wiki = a.getAttribute("data-wikilink");
     const href = a.getAttribute("href") ?? "";
     if (wiki) followLink(wiki);
@@ -341,9 +364,25 @@
 
   function onKey(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
+    if (e.key === "Escape" && graphOpen) {
+      graphOpen = false;
+      return;
+    }
     if (mod && (e.key === "k" || (e.shiftKey && e.key.toLowerCase() === "f"))) {
       e.preventDefault();
-      paletteOpen = true;
+      openPalette("");
+    } else if (mod && e.shiftKey && e.key.toLowerCase() === "p") {
+      e.preventDefault();
+      openPalette(">");
+    } else if (mod && e.shiftKey && e.key.toLowerCase() === "d") {
+      e.preventDefault();
+      openToday();
+    } else if (mod && e.key === ",") {
+      e.preventDefault();
+      settingsOpen = true;
+    } else if (mod && e.key === ".") {
+      e.preventDefault();
+      focusMode = !focusMode;
     } else if (mod && (e.key === "[" || e.key === "]")) {
       e.preventDefault();
       go(e.key === "[" ? -1 : 1);
@@ -406,7 +445,182 @@
     if (text && current === note) editor?.insert(text, at);
   }
 
+  // --- tags -----------------------------------------------------------------
+
+  function countTags(index: NoteInfo[]) {
+    const counts = new Map<string, number>();
+    for (const n of index) for (const t of n.tags) counts.set(t, (counts.get(t) ?? 0) + 1);
+    return [...counts].sort((a, b) => a[0].localeCompare(b[0]));
+  }
+
+  /** Notes tagged `tag` or a tag nested under it (`project` matches `project/forte`). */
+  function taggedNotes(tag: string, index: NoteInfo[]) {
+    return index.filter((n) => n.tags.some((t) => t === tag || t.startsWith(tag + "/"))).map((n) => n.path);
+  }
+
+  function showTag(tag: string) {
+    filter = "";
+    tagFilter = tag;
+    focusMode = false;
+  }
+
+  // --- outline --------------------------------------------------------------
+
+  function jumpTo(h: Heading) {
+    if (mode === "edit") return editor?.goToLine(h.line);
+    // The nth preview heading with the same text as the nth outline entry with that text.
+    const nth = outline.filter((o) => o.text === h.text).indexOf(h);
+    const els = Array.from(previewEl?.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6") ?? []);
+    els.filter((el) => el.textContent?.trim() === h.text)[nth]?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // --- daily notes and templates ---------------------------------------------
+
+  /** Template text by note path, or "" if it can't be read. */
+  async function templateText(path: string) {
+    return (await api.readNote(path).catch(() => "")) ?? "";
+  }
+
+  async function openToday() {
+    const name = isoDate();
+    const dir = settings.dailyFolder;
+    const path = (dir ? dir + "/" : "") + name + ".md";
+    if (notes.includes(path)) return openNote(path);
+    const created = await run(() => api.createNote(dir, name));
+    if (!created) return;
+    const tpl = templates.find((t) => nameOf(t).toLowerCase() === "daily");
+    const text = tpl ? expandTemplate(await templateText(tpl), name) : `# ${name}\n\n`;
+    await run(() => api.writeNote(created, text));
+    await refresh();
+    await openNote(created, "edit");
+    await tick();
+    editor?.goToLine(Number.MAX_SAFE_INTEGER); // start writing below the template
+  }
+
+  async function newFromTemplate(tpl: string) {
+    const dir = current && !current.startsWith(settings.templatesFolder + "/") ? dirOf(current) : "";
+    const path = await run(() => api.createNote(dir, "Untitled"));
+    if (!path) return;
+    await run(async () => api.writeNote(path, expandTemplate(await templateText(tpl), nameOf(path))));
+    await refresh();
+    await openNote(path, "edit");
+    await tick();
+    titleInput?.select();
+  }
+
+  async function insertTemplate(tpl: string) {
+    if (!current) return;
+    const text = expandTemplate(await templateText(tpl), nameOf(current));
+    if (mode !== "edit") await startEditing();
+    await tick();
+    editor?.insert(text);
+  }
+
+  // --- export -----------------------------------------------------------------
+
+  async function exportHtml() {
+    if (!current) return;
+    await flush();
+    const note = current;
+    const body = renderMarkdown(
+      content,
+      (t: string) => resolveLink(t, note, notes),
+      (href) => {
+        const rel = resolveRelative(href, note);
+        return rel ? "vault:" + rel.split("/").map(encodeURIComponent).join("/") : href;
+      },
+    );
+    // Diagrams render only in the document, so lay the page out off-screen first.
+    const scratch = document.createElement("div");
+    scratch.style.cssText = "position: fixed; left: -10000px; top: 0; width: 800px;";
+    scratch.innerHTML = body;
+    document.body.appendChild(scratch);
+    try {
+      await renderDiagrams(scratch, false);
+      // Links to other notes can't work outside the app; keep their text.
+      scratch.querySelectorAll("a.wikilink, a.tag").forEach((a) => a.replaceWith(...a.childNodes));
+      const saved = await run(() => api.exportHtml(nameOf(note), exportPage(nameOf(note), scratch.innerHTML)));
+      if (saved) flash(`Exported to ${saved}`, "info");
+    } finally {
+      scratch.remove();
+    }
+  }
+
+  async function printNote() {
+    if (!current) return;
+    await flush();
+    mode = "preview";
+    await tick();
+    if (previewEl) await renderDiagrams(previewEl, false);
+    window.print();
+  }
+
+  // --- commands and settings -------------------------------------------------
+
+  function openPalette(initial: string) {
+    paletteInitial = initial;
+    paletteOpen = true;
+  }
+
+  function buildCommands(
+    current: string | null,
+    mode: string,
+    templates: string[],
+    settings: Settings,
+    focusMode: boolean,
+  ): Command[] {
+    const list: Command[] = [
+      { label: "New note", hint: "⌘N", run: () => newNote(current ? dirOf(current) : "") },
+      { label: "Open today's note", hint: "⌘⇧D", run: openToday },
+      { label: "Show graph of linked notes", run: () => (graphOpen = true) },
+      { label: focusMode ? "Leave focus mode" : "Focus mode", hint: "⌘.", run: () => (focusMode = !focusMode) },
+      {
+        label: settings.showOutline ? "Hide outline" : "Show outline",
+        run: () => updateSettings({ ...settings, showOutline: !settings.showOutline }),
+      },
+      { label: "Settings", hint: "⌘,", run: () => (settingsOpen = true) },
+      ...templates.map((t) => ({ label: `New note from template: ${nameOf(t)}`, run: () => newFromTemplate(t) })),
+    ];
+    if (current) {
+      list.push(
+        { label: "Export note as web page (HTML)…", run: exportHtml },
+        { label: "Print or save note as PDF…", run: printNote },
+        ...templates.map((t) => ({ label: `Insert template: ${nameOf(t)}`, run: () => insertTemplate(t) })),
+      );
+    }
+    if (!templates.length) {
+      list.push({
+        label: `Create a templates folder ("${settings.templatesFolder || "Templates"}")`,
+        run: async () => {
+          const dir = settings.templatesFolder || "Templates";
+          if (!settings.templatesFolder) updateSettings({ ...settings, templatesFolder: dir });
+          const path = await run(() => api.createNote(dir, "Daily"));
+          if (!path) return;
+          await run(() => api.writeNote(path, "# {{date}}\n\n## Notes\n\n## To do\n\n- [ ] \n"));
+          await refresh();
+          await openNote(path, "edit");
+        },
+      });
+    }
+    return list;
+  }
+
+  let settingsTimer: ReturnType<typeof setTimeout>;
+  function updateSettings(next: Settings) {
+    settings = next;
+    applySettings(settings);
+    clearTimeout(settingsTimer);
+    settingsTimer = setTimeout(() => run(() => api.setSettings(settings)), 300);
+  }
+
+  const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+  const onSystemTheme = () => (systemDark = darkQuery.matches);
+  darkQuery.addEventListener("change", onSystemTheme);
+  onDestroy(() => darkQuery.removeEventListener("change", onSystemTheme));
+
   onMount(async () => {
+    settings = withDefaults(await api.getSettings().catch(() => null));
+    applySettings(settings);
     vault = (await run(api.getVault)) ?? "";
     await refresh();
   });
@@ -414,13 +628,14 @@
 
 <svelte:window on:keydown={onKey} on:beforeunload={flush} />
 
-<div class="app">
+<div class="app" class:focus={focusMode}>
   <aside>
     <div class="side-head">
-      <input class="search" placeholder="Filter by name" bind:value={filter} />
+      <input class="search" placeholder="Filter by name" bind:value={filter} on:input={() => (tagFilter = null)} />
       <button title="New note (⌘N)" on:click={() => newNote()}>+</button>
       <button title="New folder" on:click={() => newFolder()}>⊞</button>
     </div>
+    <button class="today" title="Open today's note (⌘⇧D)" on:click={openToday}>☀ Today</button>
 
     <div
       class="tree"
@@ -439,7 +654,20 @@
         if (path) moveEntry(path, "");
       }}
     >
-      {#if filter.trim()}
+      {#if tagFilter}
+        <div class="tag-head">
+          <span>#{tagFilter}</span>
+          <button title="Show all notes" on:click={() => (tagFilter = null)}>×</button>
+        </div>
+        {#each tagged as path (path)}
+          <button class="result" class:active={path === current} on:click={() => openNote(path)}>
+            {nameOf(path)}
+            {#if dirOf(path)}<span class="where">{dirOf(path)}</span>{/if}
+          </button>
+        {:else}
+          <p class="hint">No notes with this tag</p>
+        {/each}
+      {:else if filter.trim()}
         {#each filtered as path (path)}
           <button class="result" class:active={path === current} on:click={() => openNote(path)}>
             {nameOf(path)}
@@ -472,7 +700,25 @@
       {/if}
     </div>
 
-    <button class="vault" title={vault} on:click={chooseVault}>📁 {nameOf(vault) || "Notes folder"}</button>
+    {#if tagCounts.length}
+      <section class="tags">
+        <button class="tags-head" on:click={() => (tagsOpen = !tagsOpen)}>{tagsOpen ? "▾" : "▸"} Tags</button>
+        {#if tagsOpen}
+          <div class="tag-list">
+            {#each tagCounts as [tag, count] (tag)}
+              <button class="tag-chip" class:active={tag === tagFilter} on:click={() => showTag(tag)}>
+                #{tag}<span>{count}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </section>
+    {/if}
+
+    <div class="side-foot">
+      <button class="vault" title={vault} on:click={chooseVault}>📁 {nameOf(vault) || "Notes folder"}</button>
+      <button class="gear" title="Settings (⌘,)" on:click={() => (settingsOpen = true)}>⚙</button>
+    </div>
   </aside>
 
   <main>
@@ -492,29 +738,49 @@
       </header>
       {#if dirOf(current)}<div class="crumb">{dirOf(current)}</div>{/if}
 
-      {#if mode === "edit"}
-        {#key current}
-          <Editor
-            bind:this={editor}
-            value={content}
-            {linkOptions}
-            placeholder="Write markdown here. Type / or [[ to link another note."
-            on:change={(e) => {
-              content = e.detail;
-              scheduleSave();
-            }}
-            on:blur={stopEditing}
-            on:images={(e) => insertImages(e.detail.files)}
-          />
-        {/key}
-      {:else}
-        <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
-        <article class="preview" bind:this={previewEl} on:click={onPreviewClick}>
-          {@html html}
-        </article>
-      {/if}
+      <div class="body">
+        {#if mode === "edit"}
+          {#key current}
+            <Editor
+              bind:this={editor}
+              value={content}
+              {linkOptions}
+              placeholder="Write markdown here. Type / or [[ to link another note."
+              on:change={(e) => {
+                content = e.detail;
+                scheduleSave();
+              }}
+              on:blur={stopEditing}
+              on:images={(e) => insertImages(e.detail.files)}
+            />
+          {/key}
+        {:else}
+          <!-- Rebuilt when the theme flips, so diagrams are drawn again in the new colours. -->
+          {#key dark}
+            <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
+            <article class="preview" bind:this={previewEl} on:click={onPreviewClick}>
+              {@html html}
+            </article>
+          {/key}
+        {/if}
+        {#if settings.showOutline && !focusMode && outline.length >= 2}
+          <nav class="outline" aria-label="Outline">
+            <h2>Outline</h2>
+            {#each outline as h (h.line)}
+              <!-- mousedown|preventDefault keeps the editor focused, so jumping doesn't leave edit mode -->
+              <button
+                on:mousedown|preventDefault
+                style="padding-left: {6 + (h.level - Math.min(...outline.map((o) => o.level))) * 12}px"
+                on:click={() => jumpTo(h)}
+              >
+                {h.text}
+              </button>
+            {/each}
+          </nav>
+        {/if}
+      </div>
 
-      {#if incoming.length}
+      {#if incoming.length && !focusMode}
         <section class="backlinks">
           <h2>Linked from {incoming.length} {incoming.length === 1 ? "place" : "places"}</h2>
           {#each incoming as hit (hit.path + ":" + hit.line)}
@@ -529,8 +795,21 @@
     {:else}
       <div class="empty">
         <p>Select a note or create a new one.</p>
-        <p class="hint">⌘N new note · ⌘K search · click a note to edit, click away (or Esc) to preview · [[Note name]] links a note</p>
+        <p class="hint">⌘N new note · ⌘K search · ⌘⇧P commands · ⌘⇧D today's note</p>
+        <p class="hint">Click a note to edit, click away (or Esc) to preview · [[Note name]] links a note · #tag tags it</p>
       </div>
+    {/if}
+    {#if graphOpen}
+      <Graph
+        {notes}
+        {index}
+        {current}
+        on:close={() => (graphOpen = false)}
+        on:open={(e) => {
+          graphOpen = false;
+          openNote(e.detail);
+        }}
+      />
     {/if}
   </main>
 
@@ -539,12 +818,22 @@
   {#if paletteOpen}
     <Palette
       {notes}
+      {commands}
+      initial={paletteInitial}
       on:close={() => (paletteOpen = false)}
+      on:run={(e) => {
+        paletteOpen = false;
+        e.detail.run();
+      }}
       on:choose={(e) => {
         paletteOpen = false;
         openNote(e.detail.path, undefined, e.detail.line);
       }}
     />
+  {/if}
+
+  {#if settingsOpen}
+    <SettingsDialog {settings} on:change={(e) => updateSettings(e.detail)} on:close={() => (settingsOpen = false)} />
   {/if}
 </div>
 
@@ -645,6 +934,114 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+    position: relative;
+  }
+  .app.focus aside {
+    display: none;
+  }
+  .today {
+    margin: 0 8px 4px;
+    padding: 5px 8px;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--muted);
+    text-align: left;
+    font-size: 13px;
+  }
+  .today:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .tag-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .tag-head button,
+  .gear {
+    border: none;
+    background: none;
+    color: var(--muted);
+    border-radius: 4px;
+    font-size: 14px;
+    padding: 2px 6px;
+  }
+  .tag-head button:hover,
+  .gear:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .tags {
+    max-height: 30%;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+    padding: 6px 8px;
+  }
+  .tags-head {
+    border: none;
+    background: none;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 0 6px;
+  }
+  .tag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .tag-chip {
+    border: none;
+    border-radius: 10px;
+    padding: 2px 8px;
+    background: var(--hover);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .tag-chip span {
+    margin-left: 5px;
+    color: var(--muted);
+  }
+  .tag-chip:hover,
+  .tag-chip.active {
+    background: var(--active);
+    color: var(--accent);
+  }
+  .side-foot {
+    display: flex;
+    align-items: center;
+    border-top: 1px solid var(--border);
+  }
+  .side-foot .vault {
+    flex: 1;
+    min-width: 0;
+  }
+  @media print {
+    aside,
+    header .nav,
+    .crumb,
+    .outline,
+    .backlinks,
+    .toast {
+      display: none !important;
+    }
+    .app,
+    main,
+    .body {
+      display: block;
+      height: auto;
+    }
+    .preview {
+      overflow: visible;
+      padding: 0;
+    }
   }
   header {
     display: flex;
@@ -668,13 +1065,61 @@
     font-size: 12px;
     color: var(--muted);
   }
+  .body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
   .preview {
     flex: 1;
+    min-width: 0;
     overflow-y: auto;
     padding: 8px 28px 40px;
     line-height: 1.65;
-    font-size: 15px;
-    max-width: 820px;
+    font-size: var(--text-size);
+  }
+  /* Keep the line length readable without moving the scrollbar off the edge. */
+  .preview > :global(*) {
+    max-width: var(--measure);
+  }
+  .outline {
+    width: 200px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding: 8px 10px 24px 4px;
+    border-left: 1px solid var(--border);
+  }
+  .outline h2,
+  .backlinks h2 {
+    margin: 0 6px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .outline button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: none;
+    background: none;
+    color: var(--muted);
+    padding: 3px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .outline button:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+  @media (max-width: 900px) {
+    .outline {
+      display: none;
+    }
   }
   .empty {
     margin: auto;
@@ -708,14 +1153,6 @@
     overflow-y: auto;
     border-top: 1px solid var(--border);
     padding: 10px 22px 14px;
-  }
-  .backlinks h2 {
-    margin: 0 6px 6px;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
   }
   .backlinks button {
     display: block;

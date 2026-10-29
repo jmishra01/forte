@@ -9,11 +9,15 @@
   --accent: #2d5aa8;
   --danger: #c4433a;
   --code: #a8456b;
+  --text-size: 15px;
+  --measure: 820px;
+  --editor-font: ui-monospace, "SF Mono", Menlo, monospace;
   color-scheme: light dark;
 }
 
+/* Dark follows the system unless Settings picks a theme (data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #1e1e21;
     --side: #18181b;
     --border: #333338;
@@ -25,6 +29,22 @@
     --danger: #d85a52;
     --code: #e391b3;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #1e1e21;
+  --side: #18181b;
+  --border: #333338;
+  --hover: #2a2a2f;
+  --active: #2f3644;
+  --text: #e8e8eb;
+  --muted: #9a9aa2;
+  --accent: #7aa7ee;
+  --danger: #d85a52;
+  --code: #e391b3;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 * {
@@ -120,4 +140,49 @@ button {
   overflow-x: auto;
   overflow-y: hidden;
   margin: 12px 0;
+}
+.preview table.properties {
+  margin: 4px 0 18px;
+  font-size: 13px;
+}
+.preview table.properties th,
+.preview table.properties td {
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 4px 14px 4px 0;
+  text-align: left;
+  vertical-align: top;
+}
+.preview table.properties th {
+  font-weight: 500;
+  color: var(--muted);
+}
+.preview a.tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--active);
+  color: var(--accent);
+  font-size: 0.88em;
+  text-decoration: none;
+}
+
+/* Print / save as PDF: just the note, in light colours. */
+@media print {
+  :root,
+  :root:not([data-theme="light"]),
+  :root[data-theme="dark"] {
+    --bg: #fff;
+    --text: #000;
+    --muted: #555;
+    --border: #ccc;
+    --active: #eee;
+    --accent: #1a4a9a;
+    --code: #8a2c55;
+    color-scheme: light;
+  }
+  html,
+  body {
+    height: auto;
+  }
 }
