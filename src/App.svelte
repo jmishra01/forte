@@ -178,9 +178,24 @@
     await openNote(path, "edit");
   }
 
+  async function startEditing() {
+    mode = "edit";
+    await tick();
+    editor?.focus();
+  }
+
+  function stopEditing() {
+    flush();
+    if (content.trim()) mode = "preview";
+  }
+
   function onPreviewClick(e: MouseEvent) {
     const a = (e.target as HTMLElement).closest("a");
-    if (!a) return;
+    if (!a) {
+      // Clicking the text (but not selecting it) starts editing.
+      if (!window.getSelection()?.toString()) startEditing();
+      return;
+    }
     e.preventDefault();
     const wiki = a.getAttribute("data-wikilink");
     const href = a.getAttribute("href") ?? "";
@@ -198,8 +213,7 @@
       newNote(current ? dirOf(current) : "");
     } else if (mod && e.key === "e" && current) {
       e.preventDefault();
-      mode = mode === "edit" ? "preview" : "edit";
-      if (mode === "edit") tick().then(() => editor?.focus());
+      mode === "edit" ? stopEditing() : startEditing();
     } else if (mod && e.key === "s") {
       e.preventDefault();
       flush();
@@ -207,6 +221,7 @@
   }
 
   function onEditorKey(e: KeyboardEvent) {
+    if (e.key === "Escape") editor.blur();
     if (e.key !== "Tab") return;
     e.preventDefault();
     const { selectionStart: s, selectionEnd: end } = editor;
@@ -291,13 +306,9 @@
           class="title"
           bind:this={titleInput}
           bind:value={title}
-          on:keydown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          on:keydown={(e) => e.key === "Enter" && startEditing()}
           on:blur={renameCurrent}
         />
-        <div class="modes">
-          <button class:on={mode === "edit"} on:click={() => (mode = "edit")}>Edit</button>
-          <button class:on={mode === "preview"} on:click={() => (mode = "preview")}>Preview</button>
-        </div>
       </header>
       {#if dirOf(current)}<div class="crumb">{dirOf(current)}</div>{/if}
 
@@ -307,19 +318,20 @@
           bind:value={content}
           on:input={scheduleSave}
           on:keydown={onEditorKey}
+          on:blur={stopEditing}
           spellcheck="false"
           placeholder="Write markdown here. Link another note with [[Note name]]."
         />
       {:else}
         <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
-        <article class="preview" on:click={onPreviewClick} on:dblclick={() => (mode = "edit")}>
+        <article class="preview" on:click={onPreviewClick}>
           {@html html}
         </article>
       {/if}
     {:else}
       <div class="empty">
         <p>Select a note or create a new one.</p>
-        <p class="hint">⌘N new note · ⌘E switch edit / preview · [[Note name]] links a note</p>
+        <p class="hint">⌘N new note · click a note to edit, click away (or Esc) to preview · [[Note name]] links a note</p>
       </div>
     {/if}
   </main>
@@ -441,23 +453,6 @@
     color: var(--text);
     outline: none;
     padding: 4px 0;
-  }
-  .modes {
-    display: flex;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    overflow: hidden;
-  }
-  .modes button {
-    border: none;
-    background: none;
-    color: var(--muted);
-    padding: 4px 12px;
-    font-size: 12px;
-  }
-  .modes button.on {
-    background: var(--active);
-    color: var(--text);
   }
   .crumb {
     padding: 0 28px;
