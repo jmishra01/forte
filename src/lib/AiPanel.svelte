@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { createEventDispatcher, onDestroy } from "svelte";
+  import { createEventDispatcher, onDestroy, tick } from "svelte";
+  import { renderMath } from "./math";
   import { api, nameOf, type AiTask } from "./api";
   import { renderMarkdown, resolveLink } from "./markdown";
   import IconButton from "./IconButton.svelte";
@@ -20,6 +21,8 @@
 
   $: from = current ?? notes[0] ?? "";
   $: html = output ? renderMarkdown(output, (t) => resolveLink(t, from, notes)) : "";
+  let answerEl: HTMLElement;
+  $: if (html) tick().then(() => answerEl && renderMath(answerEl));
 
   async function start(t: AiTask) {
     if (running) api.aiStop();
@@ -92,7 +95,7 @@
 
     {#if output || running}
       <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
-      <article class="preview answer" on:click={onClick}>
+      <article class="preview answer" bind:this={answerEl} on:click={onClick}>
         {@html html}
         {#if running && !output}<p class="hint">Thinking…</p>{/if}
       </article>

@@ -24,9 +24,12 @@
   import IconButton from "./lib/IconButton.svelte";
   import Shortcuts from "./lib/Shortcuts.svelte";
   import { WELCOME_NAME, WELCOME_TEXT } from "./lib/welcome";
+  import { loadSession, saveSession } from "./lib/session";
+  import { listPlugins, PERMISSION_TEXT, startPlugin, type PluginCommand, type PluginInfo } from "./lib/plugins";
   import * as Icon from "./lib/icons";
   import { renderDiagrams } from "./lib/diagrams";
   import { highlightCodeBlocks } from "./lib/codeHighlight";
+  import { renderMath } from "./lib/math";
 
   let vault = "";
   let tree: Entry[] = [];
@@ -43,6 +46,10 @@
   let paletteInitial = "";
   let settingsOpen = false;
   let shortcutsOpen = false;
+  let plugins: PluginInfo[] = [];
+  /** Commands registered by each running plugin, by plugin id. */
+  let pluginCommands: Record<string, PluginCommand[]> = {};
+  const runningPlugins = new Map<string, { hash: string; stop: () => void }>();
   let graphOpen = false;
   let focusMode = false;
   let tagsOpen = true;
@@ -54,6 +61,9 @@
   let conflicts: Conflict[] = [];
   let git: GitStatus | null = null;
   let syncing = false;
+  /** This vault's encrypted sync folder, if set up. */
+  let encRemote: string | null = null;
+  let encSyncing = false;
   let aiOpen = false;
   let aiHasKey = false;
   let update: Update | null = null;
@@ -85,22 +95,31 @@
   $: tagCounts = countTags(index);
   $: tagged = tagFilter ? taggedNotes(tagFilter, index) : [];
   $: templates = notes.filter((p) => settings.templatesFolder && p.startsWith(settings.templatesFolder + "/"));
-  $: commands = buildCommands(current, mode, templates, settings, focusMode, git, update);
+  $: commands = [
+    ...buildCommands(current, mode, templates, settings, focusMode, git, update),
+    ...Object.values(pluginCommands)
+      .flat()
+      .map((c): Command => ({ label: `${c.plugin}: ${c.label}`, run: c.run })),
+  ];
   $: markers = !!current && hasMarkers(content);
+  // Remember open notes, once the saved ones have been restored (so startup doesn't overwrite them).
+  let restored = false;
+  $: if (restored && vault) saveSession(vault, { tabs, current });
   $: incoming = current ? backlinks(current, index, notes) : [];
   $: canBack = history.slice(0, place).some((p) => notes.includes(p));
   $: canForward = history.slice(place + 1).some((p) => notes.includes(p));
 
-  /** Relative images point at files in the vault, served over Tauri's asset protocol. */
+  /** Relative images point at files in the open vault, served by the backend's notefile:// protocol. */
   function imageSrc(href: string) {
     const rel = current && resolveRelative(href, current);
-    return rel ? convertFileSrc(`${vault}/${rel}`) : href;
+    return rel ? convertFileSrc(rel, "notefile") : href;
   }
   $: if (html)
     tick().then(() => {
       if (!previewEl) return;
       renderDiagrams(previewEl, dark);
       highlightCodeBlocks(previewEl);
+      renderMath(previewEl);
     });
 
   function flatten(entries: Entry[]): string[] {
@@ -396,6 +415,7 @@
     if (typeof dir !== "string") return;
     await flush();
     await run(() => api.setVault(dir));
+    restored = false; // don't save the emptied tabs over the new vault's saved ones
     vault = dir;
     current = null;
     tabs = [];
@@ -403,6 +423,18 @@
     place = -1;
     expanded = new Set();
     await refresh();
+    await restoreSession();
+    await loadPlugins(); // plugins belong to the vault
+    await loadEncSync(); // and so does encrypted sync
+  }
+
+  async function restoreSession() {
+    const session = loadSession(vault, notes);
+    if (session) {
+      tabs = session.tabs;
+      if (session.current) await openNote(session.current);
+    }
+    restored = true;
   }
 
   // --- links ----------------------------------------------------------------
@@ -673,6 +705,7 @@
     try {
       await renderDiagrams(scratch, false);
       await highlightCodeBlocks(scratch);
+      await renderMath(scratch);
       // Links to other notes can't work outside the app; keep their text.
       scratch.querySelectorAll("a.wikilink, a.tag").forEach((a) => a.replaceWith(...a.childNodes));
       const saved = await run(() => api.exportHtml(nameOf(note), exportPage(nameOf(note), scratch.innerHTML)));
@@ -719,11 +752,13 @@
       { label: "Settings", hint: "⌘,", run: () => (settingsOpen = true) },
       { label: "Keyboard shortcuts", hint: "⌘?", run: () => (shortcutsOpen = true) },
       { label: "Create a welcome note", run: createWelcome },
+      { label: "Look for plugins again", run: loadPlugins },
       { label: "Show trash", run: () => (trashOpen = true) },
       { label: "Show sync conflicts", run: () => (conflictsOpen = true) },
       git?.isRepo
         ? { label: "Sync notes with Git", run: syncNow }
         : { label: "Keep a Git history of these notes", run: startGit },
+      { label: "Encrypted sync now", run: () => (encRemote ? encSyncNow() : (settingsOpen = true)) },
       { label: update ? `Install update ${update.version}` : "Check for updates", run: () => checkForUpdate(true) },
       ...(settings.aiEnabled ? [{ label: "AI help", run: () => (aiOpen = true) }] : []),
       ...templates.map((t) => ({ label: `New note from template: ${nameOf(t)}`, run: () => newFromTemplate(t) })),
@@ -805,12 +840,37 @@
     scheduleSave();
   }
 
+  async function encSyncNow(quiet = false) {
+    if (encSyncing || !encRemote) return;
+    encSyncing = true;
+    await flush();
+    const r = await run(api.encSyncRun);
+    encSyncing = false;
+    if (!r) return;
+    if (r.sent || r.received || r.deleted || r.conflicts.length) await refresh();
+    if (r.conflicts.length) {
+      flash(`${r.conflicts.length} note${r.conflicts.length === 1 ? "" : "s"} changed on two computers; both versions were kept.`);
+      conflictsOpen = true;
+    } else if (r.unreadable) {
+      flash(`${r.unreadable} file${r.unreadable === 1 ? "" : "s"} in the sync folder couldn't be decrypted and were skipped.`);
+    } else if (!quiet) {
+      const parts = [r.sent && `${r.sent} sent`, r.received && `${r.received} received`, r.deleted && `${r.deleted} deleted`].filter(Boolean);
+      flash(parts.length ? `Encrypted sync: ${parts.join(", ")}` : "Encrypted sync: up to date", "info");
+    }
+  }
+
+  async function loadEncSync() {
+    encRemote = (await api.encSyncStatus().catch(() => ({ remote: null }))).remote;
+    if (encRemote) encSyncNow(true); // catch up on what changed elsewhere
+  }
+
   let autoSync: ReturnType<typeof setInterval> | undefined;
   $: {
     clearInterval(autoSync);
-    if (settings.gitAutoSync && git?.isRepo) {
+    if (settings.gitAutoSync && (git?.isRepo || encRemote)) {
       autoSync = setInterval(() => {
-        if (!syncing && !git?.conflicted.length) syncNow();
+        if (git?.isRepo && !syncing && !git?.conflicted.length) syncNow();
+        if (encRemote) encSyncNow(true);
       }, 5 * 60_000);
     }
   }
@@ -832,6 +892,78 @@
     installing = false;
   }
 
+  // --- plugins -----------------------------------------------------------------
+
+  async function loadPlugins() {
+    plugins = await listPlugins().catch(() => []);
+    syncPlugins();
+  }
+
+  /** Runs exactly the plugins approved on this computer whose code hasn't changed since. */
+  function syncPlugins() {
+    const wanted = new Map(
+      plugins.filter((p) => !p.error && settings.plugins[p.id] === p.hash).map((p) => [p.id, p] as const),
+    );
+    for (const [id, run] of runningPlugins) {
+      if (wanted.get(id)?.hash === run.hash) continue;
+      run.stop();
+      runningPlugins.delete(id);
+      delete pluginCommands[id];
+    }
+    for (const [id, p] of wanted) {
+      if (runningPlugins.has(id)) continue;
+      const stop = startPlugin(
+        p,
+        pluginHandlers,
+        (cmds) => (pluginCommands = { ...pluginCommands, [id]: cmds }),
+        (message) => flash(`Plugin ${p.name}: ${message}`),
+      );
+      runningPlugins.set(id, { hash: p.hash, stop });
+    }
+    pluginCommands = { ...pluginCommands };
+  }
+
+  async function togglePlugin(p: PluginInfo, on: boolean) {
+    const approved = { ...settings.plugins };
+    if (on) {
+      const can = p.permissions.length ? p.permissions.map((x) => "• " + PERMISSION_TEXT[x]).join("\n") : "• Only add commands";
+      const ok = await ask(`Turn on "${p.name}"?\n\nIt will be able to:\n${can}\n\nOnly turn on plugins you trust.`, {
+        title: "Turn on plugin",
+        kind: "warning",
+        okLabel: "Turn on",
+        cancelLabel: "Cancel",
+      });
+      if (!ok) return (settings = { ...settings }); // re-render to untick the box
+      approved[p.id] = p.hash;
+    } else {
+      delete approved[p.id];
+    }
+    updateSettings({ ...settings, plugins: approved });
+    syncPlugins();
+  }
+
+  const pluginHandlers = {
+    currentNote: () => (current ? { path: current, text: content } : null),
+    insertText: async (text: string) => {
+      if (!current) throw new Error("no note is open");
+      if (mode !== "edit") await startEditing();
+      await tick();
+      editor?.insert(text);
+    },
+    listNotes: () => notes,
+    readNote: (path: string) => api.readNote(path),
+    writeNote: async (path: string, text: string) => {
+      if (path === current) {
+        content = saved = text;
+        if (pending) pending = null;
+      }
+      await api.writeNote(path, text);
+      await refresh();
+    },
+    notify: (name: string, message: string) => flash(`${name}: ${message}`, "info"),
+  };
+  onDestroy(() => runningPlugins.forEach((r) => r.stop()));
+
   const darkQuery = matchMedia("(prefers-color-scheme: dark)");
   const onSystemTheme = () => (systemDark = darkQuery.matches);
   darkQuery.addEventListener("change", onSystemTheme);
@@ -842,6 +974,9 @@
     applySettings(settings);
     vault = (await run(api.getVault)) ?? "";
     await refresh();
+    await restoreSession();
+    loadPlugins();
+    loadEncSync();
     aiHasKey = await api.aiHasKey().catch(() => false);
     setTimeout(() => checkForUpdate(), 4000);
   });
@@ -964,6 +1099,15 @@
         <IconButton icon={Icon.Sync} label={syncTitle(git)} busy={syncing} disabled={syncing} on:click={syncNow}>
           {#if git.changes || git.ahead || git.behind}<span class="dot" aria-hidden="true" />{/if}
         </IconButton>
+      {/if}
+      {#if encRemote}
+        <IconButton
+          icon={Icon.EncryptedSync}
+          label="Encrypted sync through {nameOf(encRemote)}"
+          busy={encSyncing}
+          disabled={encSyncing}
+          on:click={() => encSyncNow()}
+        />
       {/if}
       {#if settings.aiEnabled}
         <IconButton icon={Icon.Ai} label="AI help" pressed={aiOpen} on:click={() => (aiOpen = !aiOpen)} />
@@ -1136,6 +1280,14 @@
     <SettingsDialog
       {settings}
       hasKey={aiHasKey}
+      {plugins}
+      {encRemote}
+      on:encSyncChanged={(e) => {
+        encRemote = e.detail;
+        if (encRemote) encSyncNow();
+      }}
+      on:togglePlugin={(e) => togglePlugin(e.detail.plugin, e.detail.on)}
+      on:reloadPlugins={loadPlugins}
       on:change={(e) => updateSettings(e.detail)}
       on:keyChanged={(e) => (aiHasKey = e.detail)}
       on:close={() => (settingsOpen = false)}

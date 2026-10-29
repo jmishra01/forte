@@ -2,6 +2,7 @@
   import { createEventDispatcher, onMount } from "svelte";
   import IconButton from "./IconButton.svelte";
   import { Close } from "./icons";
+  import { trapFocus } from "./trapFocus";
 
   const dispatch = createEventDispatcher<{ close: void }>();
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
@@ -57,7 +58,7 @@
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div class="backdrop" on:mousedown|self={() => dispatch("close")} on:keydown={(e) => e.key === "Escape" && dispatch("close")}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1" bind:this={dialog}>
+  <div class="dialog" role="dialog" aria-modal="true" use:trapFocus aria-label="Keyboard shortcuts" tabindex="-1" bind:this={dialog}>
     <header>
       <h2>Keyboard shortcuts</h2>
       <IconButton icon={Close} label="Close" on:click={() => dispatch("close")} />

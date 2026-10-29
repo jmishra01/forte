@@ -1,6 +1,9 @@
 mod ai;
 mod conflicts;
+mod encsync;
+mod files;
 mod git;
+mod plugins;
 mod search;
 mod trash;
 mod vault;
@@ -15,6 +18,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .register_uri_scheme_protocol(files::SCHEME, files::handle)
         .setup(|app| {
             #[cfg(desktop)]
             {
@@ -41,7 +45,6 @@ pub fn run() {
                 vault::migrate_legacy(cfg.data_dir.as_deref().unwrap_or(&data_dir), &root);
             }
 
-            vault::allow_assets(app.handle(), &root);
             let watcher = watch::start(app.handle().clone(), &root);
             app.manage(AppState {
                 root: Mutex::new(root),
@@ -75,6 +78,12 @@ pub fn run() {
             ai::ai_clear_key,
             ai::ai_run,
             ai::ai_stop,
+            plugins::list_plugins,
+            encsync::enc_sync_status,
+            encsync::enc_sync_probe,
+            encsync::enc_sync_connect,
+            encsync::enc_sync_disconnect,
+            encsync::enc_sync_run,
             vault::search_notes,
             vault::note_index,
             vault::get_settings,

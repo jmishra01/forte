@@ -29,7 +29,7 @@ hr { border: none; border-top: 1px solid #e3e3e6; }
 .tok-typeName, .tok-className, .tok-namespace { color: #1f6f8b; }
 .tok-definition, .tok-macroName { color: #2d5aa8; }
 .tok-propertyName { color: #7a5a00; }
-.math { text-align: center; margin: 12px 0; }
+.math-block { text-align: center; margin: 12px 0; }
 `;
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

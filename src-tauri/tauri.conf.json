@@ -24,9 +24,10 @@
         "default-src": "'self'",
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' asset: http://asset.localhost data: blob: https:",
+        "img-src": "'self' notefile: http://notefile.localhost data: blob: https:",
         "font-src": "'self' data:",
         "connect-src": "ipc: http://ipc.localhost",
+        "worker-src": "blob:",
         "object-src": "'none'",
         "frame-src": "'none'",
         "base-uri": "'none'",
@@ -36,23 +37,22 @@
         "default-src": "'self'",
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' asset: http://asset.localhost data: blob: https:",
+        "img-src": "'self' notefile: http://notefile.localhost data: blob: https:",
         "font-src": "'self' data:",
         "connect-src": "ipc: http://ipc.localhost ws://localhost:1430",
+        "worker-src": "blob:",
         "object-src": "'none'",
         "frame-src": "'none'",
         "base-uri": "'none'",
         "form-action": "'none'"
       },
-      "dangerousDisableAssetCspModification": ["style-src"],
-      "assetProtocol": {
-        "enable": true,
-        "scope": []
-      }
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {
     "active": true,
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 Jitendra Mishra",
     "targets": "all",
     "icon": [
       "icons/32x32.png",

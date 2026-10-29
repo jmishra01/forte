@@ -11,6 +11,7 @@
   } from "d3-force";
   import { nameOf, type NoteInfo } from "./api";
   import { linkTarget } from "./links";
+  import { noFilters, visibleNotes, type GraphFilters } from "./graphFilter";
   import IconButton from "./IconButton.svelte";
   import { Close } from "./icons";
 
@@ -33,31 +34,63 @@
   let view = { x: 0, y: 0, k: 1 };
   let drag: { node: Node | null; startX: number; startY: number; moved: boolean } | null = null;
 
-  function build() {
-    const byId = new Map(notes.map((id) => [id, { id, degree: 0 } as Node]));
+  /** Every link between two existing notes, once each, as [from, to] paths. */
+  function allLinks(): [string, string][] {
     const seen = new Set<string>();
-    const list: Edge[] = [];
+    const out: [string, string][] = [];
     for (const note of index) {
-      const from = byId.get(note.path);
-      if (!from) continue;
+      if (!notes.includes(note.path)) continue;
       for (const l of note.links) {
-        const to = byId.get(linkTarget(l, note.path, notes) ?? "");
-        const key = [note.path, to?.id].sort().join("\n");
-        if (!to || to === from || seen.has(key)) continue;
+        const to = linkTarget(l, note.path, notes);
+        const key = [note.path, to].sort().join("\n");
+        if (!to || to === note.path || seen.has(key)) continue;
         seen.add(key);
-        list.push({ source: from, target: to });
-        from.degree++;
-        to.degree++;
+        out.push([note.path, to]);
       }
     }
-    nodes = [...byId.values()];
-    edges = list;
+    return out;
+  }
+
+  const links = allLinks();
+  const tagsByPath = new Map(index.map((n) => [n.path, n.tags]));
+  const tagOptions = [...new Set(index.flatMap((n) => n.tags))].sort();
+  const folderOptions = [...new Set(notes.flatMap((p) => p.split("/").slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join("/"))))].sort();
+  let filters: GraphFilters = { ...noFilters, center: current };
+
+  function build() {
+    const kept = visibleNotes(notes, links, (p) => tagsByPath.get(p) ?? [], filters);
+    const byId = new Map([...kept].map((id) => [id, { id, degree: 0 } as Node]));
+    edges = links
+      .filter(([a, b]) => byId.has(a) && byId.has(b))
+      .map(([a, b]) => ({ source: byId.get(a)!, target: byId.get(b)! }));
+    neighbors = new Map();
     for (const e of edges) {
+      e.source.degree++;
+      e.target.degree++;
       if (!neighbors.has(e.source.id)) neighbors.set(e.source.id, new Set());
       if (!neighbors.has(e.target.id)) neighbors.set(e.target.id, new Set());
       neighbors.get(e.source.id)!.add(e.target.id);
       neighbors.get(e.target.id)!.add(e.source.id);
     }
+    nodes = [...byId.values()];
+  }
+
+  /** Lays the graph out again for the current filters. */
+  function relayout() {
+    sim?.stop();
+    hover = null;
+    build();
+    sim = forceSimulation(nodes)
+      .force("link", forceLink<Node, Edge>(edges).distance(70).strength(0.6))
+      .force("charge", forceManyBody().strength(-160))
+      .force("center", forceCenter(0, 0).strength(0.05))
+      .force("collide", forceCollide<Node>().radius((n) => radius(n) + 6))
+      .on("tick", draw);
+  }
+
+  function setFilter<K extends keyof GraphFilters>(key: K, value: GraphFilters[K]) {
+    filters = { ...filters, [key]: value };
+    relayout();
   }
 
   const radius = (n: Node) => 4 + Math.min(8, Math.sqrt(n.degree) * 2);
@@ -181,15 +214,9 @@
   let observer: ResizeObserver;
 
   onMount(() => {
-    build();
     const rect = wrap.getBoundingClientRect();
     view = { x: rect.width / 2, y: rect.height / 2, k: 1 };
-    sim = forceSimulation(nodes)
-      .force("link", forceLink<Node, Edge>(edges).distance(70).strength(0.6))
-      .force("charge", forceManyBody().strength(-160))
-      .force("center", forceCenter(0, 0).strength(0.05))
-      .force("collide", forceCollide<Node>().radius((n) => radius(n) + 6))
-      .on("tick", draw);
+    relayout();
     observer = new ResizeObserver(resize);
     observer.observe(wrap);
   });
@@ -203,6 +230,35 @@
 <div class="graph" bind:this={wrap}>
   <div class="bar">
     <span>{nodes.length} notes · {edges.length} links</span>
+    <span class="filters">
+      {#if tagOptions.length}
+        <select aria-label="Only notes with tag" value={filters.tag} on:change={(e) => setFilter("tag", e.currentTarget.value)}>
+          <option value="">All tags</option>
+          {#each tagOptions as t}<option value={t}>#{t}</option>{/each}
+        </select>
+      {/if}
+      {#if folderOptions.length}
+        <select aria-label="Only notes in folder" value={filters.folder} on:change={(e) => setFilter("folder", e.currentTarget.value)}>
+          <option value="">All folders</option>
+          {#each folderOptions as f}<option value={f}>{f}</option>{/each}
+        </select>
+      {/if}
+      {#if current}
+        <select
+          aria-label="Only notes near the open note"
+          value={String(filters.depth)}
+          on:change={(e) => setFilter("depth", Number(e.currentTarget.value))}
+        >
+          <option value="0">Whole vault</option>
+          <option value="1">1 link from this note</option>
+          <option value="2">2 links from this note</option>
+        </select>
+      {/if}
+      <label>
+        <input type="checkbox" checked={filters.hideUnlinked} on:change={(e) => setFilter("hideUnlinked", e.currentTarget.checked)} />
+        Hide unlinked
+      </label>
+    </span>
     <span class="hint">Click a note to open it · drag to move · scroll to zoom</span>
     <span class="close"><IconButton icon={Close} label="Close graph (Esc)" on:click={() => dispatch("close")} /></span>
   </div>
@@ -243,6 +299,33 @@
   }
   .hint {
     flex: 1;
+    text-align: right;
+  }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    pointer-events: auto;
+  }
+  .filters select {
+    max-width: 160px;
+    padding: 3px 6px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .filters label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  @media (max-width: 1100px) {
+    .hint {
+      display: none;
+    }
   }
   .close {
     pointer-events: auto;

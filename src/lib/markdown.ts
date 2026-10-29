@@ -1,17 +1,18 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import katex from "katex";
-import "katex/dist/katex.min.css";
 import { dirOf, nameOf } from "./api";
-import { splitFrontMatter } from "./frontmatter";
+import { splitFrontMatter, tagList } from "./frontmatter";
 
 // Set by render() so the wikilink renderer can mark links to missing notes,
 // and the image renderer can point relative images at files in the vault.
 let resolveForRender: (target: string) => string | null = () => null;
 let imageSrcForRender: (href: string) => string = (href) => href;
 
-const tex = (src: string, displayMode: boolean) =>
-  katex.renderToString(src, { displayMode, throwOnError: false, output: "htmlAndMathml" });
+/** A placeholder holding the TeX; math.ts draws it (loading KaTeX only when there is some). */
+const tex = (src: string, display: boolean) =>
+  display
+    ? `<div class="math-block" data-tex="${escapeHtml(src)}" data-display="true">${escapeHtml(src)}</div>`
+    : `<span class="math-inline" data-tex="${escapeHtml(src)}">${escapeHtml(src)}</span>`;
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -41,7 +42,7 @@ marked.use({
         return { type: "mathBlock", raw: m[0], text: m[1].trim() };
       },
       renderer(token) {
-        return `<div class="math">${tex(token.text, true)}</div>`;
+        return tex(token.text, true);
       },
     },
     {
@@ -100,10 +101,10 @@ marked.use({
   ],
 });
 
-// DOMPurify's default URL check, plus asset: (how Tauri serves vault images) and
+// DOMPurify's default URL check, plus notefile: (how the backend serves vault images) and
 // vault: (how exported pages mark images to embed).
 const ALLOWED_URI_REGEXP =
-  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|asset|vault):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|notefile|vault):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 
 export function renderMarkdown(
   src: string,
@@ -132,11 +133,10 @@ function propertiesHtml(props: ReturnType<typeof splitFrontMatter>["props"]) {
   const rows = props.map(({ key, value }) => {
     const items = Array.isArray(value) ? value : [value];
     const cells = /^tags?$/.test(key)
-      ? items
-          .map((t) => t.replace(/^#/, ""))
+      ? tagList(value)
           .map((t) => `<a href="#" class="tag" data-tag="${escapeHtml(t.toLowerCase())}">#${escapeHtml(t)}</a>`)
           .join(" ")
-      : items.map(escapeHtml).join(", ");
+      : items.map((v) => escapeHtml(v).replace(/\n/g, "<br>")).join(", ");
     return `<tr><th>${escapeHtml(key)}</th><td>${cells}</td></tr>`;
   });
   return `<table class="properties">${rows.join("")}</table>`;

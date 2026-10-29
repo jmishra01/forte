@@ -157,7 +157,7 @@ button {
   border: none;
   border-top: 1px solid var(--border);
 }
-.preview .math {
+.preview .math-block {
   overflow-x: auto;
   overflow-y: hidden;
   margin: 12px 0;
