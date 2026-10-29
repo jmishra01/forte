@@ -8,6 +8,10 @@ export interface Settings {
   /** Vault folder whose notes are offered as templates. */
   templatesFolder: string;
   showOutline: boolean;
+  /** AI help (summaries, link suggestions, questions) with the person's own API key. Off until turned on. */
+  aiEnabled: boolean;
+  /** Commit, pull and push the vault every few minutes when it is a Git repository. */
+  gitAutoSync: boolean;
 }
 
 export const defaults: Settings = {
@@ -18,6 +22,8 @@ export const defaults: Settings = {
   dailyFolder: "Daily",
   templatesFolder: "Templates",
   showOutline: true,
+  aiEnabled: false,
+  gitAutoSync: false,
 };
 
 /** Stored settings over the defaults, ignoring unknown keys and wrong types. */

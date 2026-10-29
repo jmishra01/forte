@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
-use crate::{search, watch};
+use crate::{search, trash, watch};
 
 /// The vault is a plain folder on disk: sub-folders are folders, `.md` files are notes.
 /// Every path crossing the IPC boundary is relative to the vault root, using `/`.
@@ -49,11 +49,11 @@ pub struct Entry {
     children: Vec<Entry>,
 }
 
-fn root(state: &State<AppState>) -> PathBuf {
+pub(crate) fn root(state: &State<AppState>) -> PathBuf {
     state.root.lock().unwrap().clone()
 }
 
-fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel = Path::new(rel);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return Err(format!("invalid path: {}", rel.display()));
@@ -83,7 +83,7 @@ fn clean_name(name: &str) -> Result<String, String> {
 }
 
 /// `dir/stem.ext`, or `dir/stem 1.ext`, `dir/stem 2.ext`, ... if taken.
-fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
+pub(crate) fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let make = |n: u32| {
         let base = if n == 0 { stem.to_string() } else { format!("{stem} {n}") };
         dir.join(if ext.is_empty() { base } else { format!("{base}.{ext}") })
@@ -186,7 +186,7 @@ pub fn move_entry(state: State<AppState>, path: String, dir: String) -> Result<S
 
 #[tauri::command]
 pub fn delete_entry(state: State<AppState>, path: String) -> Result<(), String> {
-    trash(&root(&state), &path)
+    trash::move_to_trash(&root(&state), &path)
 }
 
 #[tauri::command]
@@ -383,14 +383,24 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Deleted entries go to `<vault>/.trash` instead of being removed for good.
-fn trash(root: &Path, path: &str) -> Result<(), String> {
-    let from = resolve(root, path)?;
-    let trash = root.join(".trash");
-    fs::create_dir_all(&trash).map_err(|e| e.to_string())?;
-    let stem = from.file_stem().ok_or("invalid path")?.to_string_lossy();
-    let ext = from.extension().map(|e| e.to_string_lossy()).unwrap_or_default();
-    fs::rename(&from, unique_path(&trash, &stem, &ext)).map_err(|e| e.to_string())
+/// First launch under the current app identifier: pick up the config and
+/// vault of an install made under the old one (their folders are named after
+/// the identifier). Nothing is moved or deleted; the old folders stay as they are.
+pub fn adopt_old_install(config_path: &Path, old_config_dir: &Path, old_data_dir: &Path) {
+    if config_path.exists() {
+        return;
+    }
+    let mut cfg = Config::load(&old_config_dir.join("config.json"));
+    if cfg.vault.is_none() && old_data_dir.join("vault").is_dir() {
+        cfg.vault = Some(old_data_dir.join("vault"));
+    }
+    // Notes from before the markdown rewrite are imported from here if no vault exists yet.
+    if cfg.data_dir.is_none() && old_data_dir.is_dir() {
+        cfg.data_dir = Some(old_data_dir.to_path_buf());
+    }
+    if cfg.vault.is_some() || cfg.data_dir.is_some() {
+        let _ = cfg.save(config_path);
+    }
 }
 
 /// One-time import of notes from the old app format (`<id>.md` + `index.json`)
@@ -505,9 +515,9 @@ mod tests {
     fn delete_moves_to_trash_without_overwriting() {
         let (_d, root) = vault();
         write(&root, "n.md", "first").unwrap();
-        trash(&root, "n.md").unwrap();
+        trash::move_to_trash(&root, "n.md").unwrap();
         write(&root, "n.md", "second").unwrap();
-        trash(&root, "n.md").unwrap();
+        trash::move_to_trash(&root, "n.md").unwrap();
         assert!(!root.join("n.md").exists());
         assert_eq!(fs::read_to_string(root.join(".trash/n.md")).unwrap(), "first");
         assert_eq!(fs::read_to_string(root.join(".trash/n 1.md")).unwrap(), "second");
@@ -539,6 +549,42 @@ mod tests {
             embed_images(&root, html),
             r#"<img src="data:image/png;base64,UE5H"><img src=""><img src="https://x/y.png">"#
         );
+    }
+
+    #[test]
+    fn adopts_old_install_config_and_default_vault() {
+        let (_d, base) = vault();
+        let (new_cfg, old_cfg, old_data) = (base.join("new/config.json"), base.join("oldcfg"), base.join("olddata"));
+        fs::create_dir_all(new_cfg.parent().unwrap()).unwrap();
+
+        // Nothing old: nothing written.
+        adopt_old_install(&new_cfg, &old_cfg, &old_data);
+        assert!(!new_cfg.exists());
+
+        // Old default vault, no old config.
+        fs::create_dir_all(old_data.join("vault")).unwrap();
+        adopt_old_install(&new_cfg, &old_cfg, &old_data);
+        let cfg = Config::load(&new_cfg);
+        assert_eq!(cfg.vault, Some(old_data.join("vault")));
+        assert_eq!(cfg.data_dir, Some(old_data.clone()));
+
+        // An existing new config is never replaced.
+        fs::write(&new_cfg, r#"{"vault":"/mine"}"#).unwrap();
+        adopt_old_install(&new_cfg, &old_cfg, &old_data);
+        assert_eq!(Config::load(&new_cfg).vault, Some(PathBuf::from("/mine")));
+    }
+
+    #[test]
+    fn adopts_old_config_with_custom_vault_and_settings() {
+        let (_d, base) = vault();
+        let (new_cfg, old_cfg, old_data) = (base.join("config.json"), base.join("oldcfg"), base.join("nodata"));
+        fs::create_dir_all(&old_cfg).unwrap();
+        fs::write(old_cfg.join("config.json"), r#"{"vault":"/Users/me/Notes","settings":{"theme":"dark"}}"#).unwrap();
+        adopt_old_install(&new_cfg, &old_cfg, &old_data);
+        let cfg = Config::load(&new_cfg);
+        assert_eq!(cfg.vault, Some(PathBuf::from("/Users/me/Notes")));
+        assert_eq!(cfg.settings["theme"], "dark");
+        assert_eq!(cfg.data_dir, None);
     }
 
     #[test]

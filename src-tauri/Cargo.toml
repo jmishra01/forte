@@ -19,6 +19,15 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 base64 = "0.22"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+futures-util = "0.3"
+
+# Self-update and relaunch exist on desktop only.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [profile.release]
 panic = "abort"
