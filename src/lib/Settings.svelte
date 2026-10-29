@@ -49,7 +49,7 @@
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div class="backdrop" on:mousedown|self={() => dispatch("close")} on:keydown={(e) => e.key === "Escape" && dispatch("close")}>
-  <div class="dialog" role="dialog" aria-label="Settings" bind:this={dialog}>
+  <div class="dialog" role="dialog" aria-modal="true" aria-label="Settings" bind:this={dialog}>
     <h2>Settings</h2>
 
     <label>

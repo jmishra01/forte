@@ -30,7 +30,7 @@
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div class="backdrop" on:mousedown|self={() => dispatch("close")} on:keydown={(e) => e.key === "Escape" && dispatch("close")}>
-  <div class="dialog" class:wide={comparing} role="dialog" aria-label="Sync conflicts">
+  <div class="dialog" class:wide={comparing} role="dialog" aria-modal="true" aria-label="Sync conflicts">
     {#if comparing}
       {@const c = comparing.conflict}
       <h2>{nameOf(c.original ?? c.path)}</h2>

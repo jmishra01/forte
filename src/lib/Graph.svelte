@@ -11,6 +11,8 @@
   } from "d3-force";
   import { nameOf, type NoteInfo } from "./api";
   import { linkTarget } from "./links";
+  import IconButton from "./IconButton.svelte";
+  import { Close } from "./icons";
 
   export let notes: string[];
   export let index: NoteInfo[];
@@ -202,7 +204,7 @@
   <div class="bar">
     <span>{nodes.length} notes · {edges.length} links</span>
     <span class="hint">Click a note to open it · drag to move · scroll to zoom</span>
-    <button title="Close (Esc)" on:click={() => dispatch("close")}>×</button>
+    <span class="close"><IconButton icon={Close} label="Close graph (Esc)" on:click={() => dispatch("close")} /></span>
   </div>
   <canvas
     bind:this={canvas}
@@ -242,18 +244,7 @@
   .hint {
     flex: 1;
   }
-  .bar button {
+  .close {
     pointer-events: auto;
-    width: 26px;
-    height: 26px;
-    border: none;
-    border-radius: 5px;
-    background: none;
-    color: var(--muted);
-    font-size: 18px;
-  }
-  .bar button:hover {
-    background: var(--hover);
-    color: var(--text);
   }
 </style>

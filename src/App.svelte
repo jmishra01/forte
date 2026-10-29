@@ -21,6 +21,10 @@
   import { findUpdate, installUpdate } from "./lib/updates";
   import type { Update } from "@tauri-apps/plugin-updater";
   import Editor, { type LinkOption } from "./lib/Editor.svelte";
+  import IconButton from "./lib/IconButton.svelte";
+  import Shortcuts from "./lib/Shortcuts.svelte";
+  import { WELCOME_NAME, WELCOME_TEXT } from "./lib/welcome";
+  import * as Icon from "./lib/icons";
   import { renderDiagrams } from "./lib/diagrams";
   import { highlightCodeBlocks } from "./lib/codeHighlight";
 
@@ -38,6 +42,7 @@
   let paletteOpen = false;
   let paletteInitial = "";
   let settingsOpen = false;
+  let shortcutsOpen = false;
   let graphOpen = false;
   let focusMode = false;
   let tagsOpen = true;
@@ -57,6 +62,8 @@
   let showList = false;
   let systemDark = matchMedia("(prefers-color-scheme: dark)").matches;
   let index: NoteInfo[] = [];
+  /** Open notes, in tab order. `current` is always one of them (or null when none is open). */
+  let tabs: string[] = [];
   /** Notes visited, for back/forward; `place` is the current position in it. */
   let history: string[] = [];
   let place = -1;
@@ -167,7 +174,7 @@
     } catch {
       // Moved, renamed or deleted elsewhere. Unsaved edits stay open; the next save recreates the file.
       if (path === current && content === saved) {
-        current = null;
+        await closeTab(path);
         flash(`"${nameOf(path)}" was moved or deleted outside Forte`);
       }
       return;
@@ -214,10 +221,23 @@
    * Opens `path`. With `line` (1-based), opens it for editing with the caret on that line.
    * `fromHistory` is set by back/forward, which move through history instead of adding to it.
    */
-  async function openNote(path: string, forceMode?: "edit" | "preview", line?: number, fromHistory = false) {
+  async function openNote(
+    path: string,
+    forceMode?: "edit" | "preview",
+    line?: number,
+    fromHistory = false,
+    newTab = false,
+  ) {
     await flush();
     const text = await run(() => api.readNote(path));
     if (text === undefined) return false;
+    // An open note just becomes active; otherwise it replaces this tab, or opens beside it.
+    if (!tabs.includes(path)) {
+      const at = current ? tabs.indexOf(current) : -1;
+      if (at === -1) tabs = [...tabs, path];
+      else if (newTab) tabs = [...tabs.slice(0, at + 1), path, ...tabs.slice(at + 1)];
+      else tabs = tabs.map((t, i) => (i === at ? path : t));
+    }
     current = path;
     title = nameOf(path);
     content = text;
@@ -242,6 +262,34 @@
       if (await openNote(history[i], undefined, undefined, true)) place = i;
       return;
     }
+  }
+
+  /** Closes tabs for `paths`; if the active one goes, its neighbour opens. */
+  async function closeTabs(paths: (p: string) => boolean) {
+    const at = current ? tabs.indexOf(current) : -1;
+    const closingCurrent = !!current && paths(current);
+    if (closingCurrent) await flush();
+    tabs = tabs.filter((t) => !paths(t));
+    if (!closingCurrent) return;
+    const next = tabs[Math.min(Math.max(at, 0), tabs.length - 1)];
+    if (next) await openNote(next);
+    else current = null;
+  }
+
+  const closeTab = (path: string) => closeTabs((t) => t === path);
+
+  async function switchTab(step: number) {
+    if (tabs.length < 2 || !current) return;
+    const at = tabs.indexOf(current);
+    await openNote(tabs[(at + step + tabs.length) % tabs.length]);
+  }
+
+  async function createWelcome() {
+    const path = await run(() => api.createNote("", WELCOME_NAME));
+    if (!path) return;
+    await run(() => api.writeNote(path, WELCOME_TEXT));
+    await refresh();
+    await openNote(path, "preview");
   }
 
   async function newNote(dir = "") {
@@ -272,6 +320,7 @@
   /** Keep `current` and history pointing at the same notes after `from` was renamed or moved to `to`. */
   function repoint(from: string, to: string) {
     history = history.map((p) => remap(p, from, to));
+    tabs = tabs.map((p) => remap(p, from, to));
     if (!current || remap(current, from, to) === current) return;
     current = remap(current, from, to);
     if (pending) pending.path = current;
@@ -337,7 +386,8 @@
     if (!ok) return;
     await flush();
     await run(() => api.remove(path));
-    if (current && (current === path || current.startsWith(path + "/"))) current = null;
+    pending = null; // a late save would bring the deleted note back
+    await closeTabs((t) => t === path || t.startsWith(path + "/"));
     await refresh();
   }
 
@@ -348,6 +398,7 @@
     await run(() => api.setVault(dir));
     vault = dir;
     current = null;
+    tabs = [];
     history = [];
     place = -1;
     expanded = new Set();
@@ -356,17 +407,17 @@
 
   // --- links ----------------------------------------------------------------
 
-  async function followLink(target: string) {
+  async function followLink(target: string, newTab = false) {
     if (!current) return;
     const found = resolveLink(target, current, notes);
-    if (found) return openNote(found);
+    if (found) return openNote(found, undefined, undefined, false, newTab);
     // Link to a note that doesn't exist yet: create it.
     const clean = target.split("#")[0].replace(/\.md$/i, "").trim();
     const dir = clean.includes("/") ? dirOf(clean) : dirOf(current);
     const path = await run(() => api.createNote(dir, nameOf(clean)));
     if (!path) return;
     await refresh();
-    await openNote(path, "edit");
+    await openNote(path, "edit", undefined, false, newTab);
   }
 
   /** Switches to editing, with the caret at character `at` of the note if given. */
@@ -423,9 +474,10 @@
     if (tag) return showTag(tag);
     const wiki = a.getAttribute("data-wikilink");
     const href = a.getAttribute("href") ?? "";
-    if (wiki) followLink(wiki);
+    const newTab = e.metaKey || e.ctrlKey;
+    if (wiki) followLink(wiki, newTab);
     else if (/^(https?|mailto):/i.test(href)) openUrl(href);
-    else if (/\.md(#.*)?$/i.test(href)) followLink(decodeURIComponent(href));
+    else if (/\.md(#.*)?$/i.test(href)) followLink(decodeURIComponent(href), newTab);
   }
 
   // --- keyboard -------------------------------------------------------------
@@ -434,6 +486,18 @@
     const mod = e.metaKey || e.ctrlKey;
     if (e.key === "Escape" && graphOpen) {
       graphOpen = false;
+      return;
+    }
+    // Ctrl+Tab cycles tabs (on every platform); ⌘/Ctrl+1–9 jumps to one, 9 being the last.
+    if (e.ctrlKey && e.key === "Tab") {
+      e.preventDefault();
+      switchTab(e.shiftKey ? -1 : 1);
+      return;
+    }
+    if (mod && !e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key) && tabs.length) {
+      e.preventDefault();
+      const t = e.key === "9" ? tabs[tabs.length - 1] : tabs[Number(e.key) - 1];
+      if (t) openNote(t);
       return;
     }
     if (mod && (e.key === "k" || (e.shiftKey && e.key.toLowerCase() === "f"))) {
@@ -445,6 +509,9 @@
     } else if (mod && e.shiftKey && e.key.toLowerCase() === "d") {
       e.preventDefault();
       openToday();
+    } else if (mod && e.key === "?") {
+      e.preventDefault();
+      shortcutsOpen = true;
     } else if (mod && e.key === ",") {
       e.preventDefault();
       settingsOpen = true;
@@ -650,6 +717,8 @@
         run: () => updateSettings({ ...settings, showOutline: !settings.showOutline }),
       },
       { label: "Settings", hint: "⌘,", run: () => (settingsOpen = true) },
+      { label: "Keyboard shortcuts", hint: "⌘?", run: () => (shortcutsOpen = true) },
+      { label: "Create a welcome note", run: createWelcome },
       { label: "Show trash", run: () => (trashOpen = true) },
       { label: "Show sync conflicts", run: () => (conflictsOpen = true) },
       git?.isRepo
@@ -661,6 +730,9 @@
     ];
     if (current) {
       list.push(
+        { label: "Close tab", run: () => closeTab(current) },
+        { label: "Next tab", hint: "⌃Tab", run: () => switchTab(1) },
+        { label: "Previous tab", hint: "⌃⇧Tab", run: () => switchTab(-1) },
         { label: "Export note as web page (HTML)…", run: exportHtml },
         { label: "Print or save note as PDF…", run: printNote },
         ...templates.map((t) => ({ label: `Insert template: ${nameOf(t)}`, run: () => insertTemplate(t) })),
@@ -781,10 +853,12 @@
   <aside>
     <div class="side-head">
       <input class="search" placeholder="Filter by name" bind:value={filter} on:input={() => (tagFilter = null)} />
-      <button title="New note (⌘N)" on:click={() => newNote()}>+</button>
-      <button title="New folder" on:click={() => newFolder()}>⊞</button>
+      <IconButton icon={Icon.NewNote} label="New note (⌘N)" on:click={() => newNote()} />
+      <IconButton icon={Icon.NewFolder} label="New folder" on:click={() => newFolder()} />
     </div>
-    <button class="today" title="Open today's note (⌘⇧D)" on:click={openToday}>☀ Today</button>
+    <button class="today" title="Open today's note (⌘⇧D)" on:click={openToday}>
+      <Icon.Today size={15} strokeWidth={1.75} aria-hidden="true" /> Today
+    </button>
 
     <div
       class="tree"
@@ -806,7 +880,7 @@
       {#if tagFilter}
         <div class="tag-head">
           <span>#{tagFilter}</span>
-          <button title="Show all notes" on:click={() => (tagFilter = null)}>×</button>
+          <IconButton size="sm" icon={Icon.Close} label="Show all notes" on:click={() => (tagFilter = null)} />
         </div>
         {#each tagged as path (path)}
           <button class="result" class:active={path === current} on:click={() => openNote(path)}>
@@ -831,7 +905,9 @@
           {expanded}
           {current}
           {renaming}
+          focusable={current && notes.includes(current) ? current : tree[0]?.path ?? null}
           on:open={(e) => openNote(e.detail)}
+          on:openTab={(e) => openNote(e.detail, undefined, undefined, false, true)}
           on:toggle={(e) => {
             expanded.has(e.detail) ? expanded.delete(e.detail) : expanded.add(e.detail);
             expanded = expanded;
@@ -844,14 +920,16 @@
           on:delete={(e) => deleteEntry(e.detail)}
         />
         {#if tree.length === 0}
-          <p class="hint">No notes yet. Press + to create one.</p>
+          <p class="hint">No notes yet. Use the new note button above to create one.</p>
         {/if}
       {/if}
     </div>
 
     {#if tagCounts.length}
       <section class="tags">
-        <button class="tags-head" on:click={() => (tagsOpen = !tagsOpen)}>{tagsOpen ? "▾" : "▸"} Tags</button>
+        <button class="tags-head" aria-expanded={tagsOpen} on:click={() => (tagsOpen = !tagsOpen)}>
+          <svelte:component this={tagsOpen ? Icon.Expanded : Icon.Collapsed} size={12} strokeWidth={2} aria-hidden="true" /> Tags
+        </button>
         {#if tagsOpen}
           <div class="tag-list">
             {#each tagCounts as [tag, count] (tag)}
@@ -866,40 +944,59 @@
 
     {#if conflicts.length}
       <button class="notice warn" on:click={() => (conflictsOpen = true)}>
-        ⚠ {conflicts.length} sync conflict{conflicts.length === 1 ? "" : "s"}
+        <Icon.Warning size={14} strokeWidth={1.75} aria-hidden="true" />
+        {conflicts.length} sync conflict{conflicts.length === 1 ? "" : "s"}
       </button>
     {/if}
     {#if update}
       <button class="notice" disabled={installing} on:click={applyUpdate}>
-        {installing ? "Installing update…" : `⬆ Update to ${update.version}`}
+        <Icon.Update size={14} strokeWidth={1.75} aria-hidden="true" />
+        {installing ? "Installing update…" : `Update to ${update.version}`}
       </button>
     {/if}
 
     <div class="side-foot">
-      <button class="vault" title={vault} on:click={chooseVault}>📁 {nameOf(vault) || "Notes folder"}</button>
+      <button class="vault" title="Notes folder: {vault}. Click to choose another." on:click={chooseVault}>
+        <Icon.Vault size={15} strokeWidth={1.75} aria-hidden="true" />
+        <span>{nameOf(vault) || "Notes folder"}</span>
+      </button>
       {#if git?.isRepo}
-        <button
-          class="gear sync"
-          disabled={syncing}
-          title={syncTitle(git)}
-          on:click={syncNow}
-        >{syncing ? "…" : "⟳"}{#if git.changes || git.ahead || git.behind}<span class="dot" />{/if}</button>
+        <IconButton icon={Icon.Sync} label={syncTitle(git)} busy={syncing} disabled={syncing} on:click={syncNow}>
+          {#if git.changes || git.ahead || git.behind}<span class="dot" aria-hidden="true" />{/if}
+        </IconButton>
       {/if}
       {#if settings.aiEnabled}
-        <button class="gear" class:on={aiOpen} title="AI help" on:click={() => (aiOpen = !aiOpen)}>✦</button>
+        <IconButton icon={Icon.Ai} label="AI help" pressed={aiOpen} on:click={() => (aiOpen = !aiOpen)} />
       {/if}
-      <button class="gear" title="Trash" on:click={() => (trashOpen = true)}>🗑</button>
-      <button class="gear" title="Settings (⌘,)" on:click={() => (settingsOpen = true)}>⚙</button>
+      <IconButton icon={Icon.Trash} label="Trash" on:click={() => (trashOpen = true)} />
+      <IconButton icon={Icon.Settings} label="Settings (⌘,)" on:click={() => (settingsOpen = true)} />
     </div>
   </aside>
 
   <main>
+    {#if tabs.length > 1}
+      <div class="tabs" role="tablist" aria-label="Open notes">
+        {#each tabs as t, i (t)}
+          <div class="tab" class:active={t === current} title={t}>
+            <button
+              class="tab-name"
+              role="tab"
+              aria-selected={t === current}
+              on:click={() => openNote(t)}
+              on:auxclick={(e) => e.button === 1 && closeTab(t)}
+              title="{t}{i < 8 ? ` (⌘${i + 1})` : ""}"
+            >{nameOf(t)}</button>
+            <IconButton size="sm" icon={Icon.Close} label="Close {nameOf(t)}" on:click={() => closeTab(t)} />
+          </div>
+        {/each}
+      </div>
+    {/if}
     {#if current}
       <header>
-        <button class="list-toggle" title="Notes" on:click={() => (showList = true)}>☰</button>
+        <span class="list-toggle"><IconButton icon={Icon.NoteList} label="Show notes" on:click={() => (showList = true)} /></span>
         <div class="nav">
-          <button title="Back (⌘[)" disabled={!canBack} on:click={() => go(-1)}>‹</button>
-          <button title="Forward (⌘])" disabled={!canForward} on:click={() => go(1)}>›</button>
+          <IconButton icon={Icon.Back} label="Back (⌘[)" disabled={!canBack} on:click={() => go(-1)} />
+          <IconButton icon={Icon.Forward} label="Forward (⌘])" disabled={!canForward} on:click={() => go(1)} />
         </div>
         <input
           class="title"
@@ -989,8 +1086,13 @@
       {/if}
     {:else}
       <div class="empty">
-        <p>Select a note or create a new one.</p>
-        <p class="hint">⌘N new note · ⌘K search · ⌘⇧P commands · ⌘⇧D today's note</p>
+        {#if tree.length === 0}
+          <p>This notes folder is empty.</p>
+          <p><button class="start" on:click={createWelcome}>Create a welcome note</button></p>
+        {:else}
+          <p>Select a note or create a new one.</p>
+        {/if}
+        <p class="hint">⌘N new note · ⌘K search · ⌘⇧P commands · ⌘⇧D today's note · ⌘? all shortcuts</p>
         <p class="hint">Click a note to edit, click away (or Esc) to preview · [[Note name]] links a note · #tag tags it</p>
       </div>
     {/if}
@@ -1008,7 +1110,10 @@
     {/if}
   </main>
 
-  {#if toast}<div class="toast" class:info={toast.kind === "info"}>{toast.text}</div>{/if}
+  <!-- Always present, so screen readers announce each message as it appears. -->
+  <div class="toast-region" role="status" aria-live="polite">
+    {#if toast}<div class="toast" class:info={toast.kind === "info"}>{toast.text}</div>{/if}
+  </div>
 
   {#if paletteOpen}
     <Palette
@@ -1035,6 +1140,10 @@
       on:keyChanged={(e) => (aiHasKey = e.detail)}
       on:close={() => (settingsOpen = false)}
     />
+  {/if}
+
+  {#if shortcutsOpen}
+    <Shortcuts on:close={() => (shortcutsOpen = false)} />
   {/if}
 
   {#if trashOpen}
@@ -1081,24 +1190,15 @@
   }
   .side-head {
     display: flex;
-    gap: 4px;
+    align-items: center;
+    gap: 2px;
     padding: 10px 8px 6px;
-  }
-  .side-head button {
-    width: 28px;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--text);
-    border-radius: 5px;
-    font-size: 14px;
-  }
-  .side-head button:hover {
-    background: var(--hover);
   }
   .search {
     flex: 1;
     min-width: 0;
-    padding: 5px 8px;
+    height: 28px;
+    padding: 0 8px;
     border: 1px solid var(--border);
     border-radius: 5px;
     background: var(--bg);
@@ -1141,14 +1241,19 @@
     padding: 0 8px;
   }
   .vault {
-    margin: 6px;
-    padding: 6px 8px;
+    height: 28px;
+    padding: 0 8px;
     border: none;
     background: none;
     color: var(--muted);
     text-align: left;
     font-size: 12px;
-    border-radius: 4px;
+    border-radius: 6px;
+  }
+  .vault :global(svg) {
+    flex-shrink: 0;
+  }
+  .vault span {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1191,20 +1296,6 @@
     font-weight: 600;
     color: var(--accent);
   }
-  .tag-head button,
-  .gear {
-    border: none;
-    background: none;
-    color: var(--muted);
-    border-radius: 4px;
-    font-size: 14px;
-    padding: 2px 6px;
-  }
-  .tag-head button:hover,
-  .gear:hover {
-    background: var(--hover);
-    color: var(--text);
-  }
   .tags {
     max-height: 30%;
     overflow-y: auto;
@@ -1243,6 +1334,24 @@
     background: var(--active);
     color: var(--accent);
   }
+  /* Unread-changes marker on the sync button. */
+  .dot {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .today,
+  .vault,
+  .notice,
+  .tags-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
   .notice {
     margin: 0 8px 6px;
     padding: 6px 10px;
@@ -1256,21 +1365,6 @@
   .notice.warn {
     background: color-mix(in srgb, var(--danger) 15%, transparent);
     color: var(--danger);
-  }
-  .gear.sync {
-    position: relative;
-  }
-  .gear .dot {
-    position: absolute;
-    top: 3px;
-    right: 3px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-  }
-  .gear.on {
-    color: var(--accent);
   }
   .banner {
     display: flex;
@@ -1296,10 +1390,6 @@
   }
   .list-toggle {
     display: none;
-    border: none;
-    background: none;
-    color: var(--muted);
-    font-size: 18px;
   }
   /* Phones: the note list and the note take turns filling the screen. */
   @media (max-width: 700px) {
@@ -1339,6 +1429,8 @@
   .side-foot {
     display: flex;
     align-items: center;
+    gap: 2px;
+    padding: 5px 6px;
     border-top: 1px solid var(--border);
   }
   .side-foot .vault {
@@ -1443,6 +1535,14 @@
       display: none;
     }
   }
+  .start {
+    padding: 7px 16px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: white;
+    font-size: 13px;
+  }
   .empty {
     margin: auto;
     text-align: center;
@@ -1452,22 +1552,54 @@
     display: flex;
     gap: 2px;
   }
-  .nav button {
-    width: 26px;
-    height: 26px;
-    border: none;
-    border-radius: 5px;
-    background: none;
+  .tabs {
+    display: flex;
+    gap: 2px;
+    padding: 6px 8px 0;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+    scrollbar-width: none;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    flex: 0 1 180px;
+    min-width: 90px;
+    height: 30px;
+    padding: 0 3px 0 10px;
+    border-radius: 6px 6px 0 0;
     color: var(--muted);
-    font-size: 18px;
-    line-height: 1;
   }
-  .nav button:hover:not(:disabled) {
+  .tab:hover {
     background: var(--hover);
-    color: var(--text);
   }
-  .nav button:disabled {
-    opacity: 0.35;
+  .tab.active {
+    background: var(--bg);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+  .tab-name {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font-size: 12px;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Show a tab's close button only on hover or when it is the active one, like most editors. */
+  .tab :global(.icon-btn) {
+    visibility: hidden;
+  }
+  .tab:hover :global(.icon-btn),
+  .tab.active :global(.icon-btn),
+  .tab :global(.icon-btn:focus-visible) {
+    visibility: visible;
   }
   .backlinks {
     flex-shrink: 0;

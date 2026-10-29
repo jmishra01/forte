@@ -103,12 +103,13 @@
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div class="backdrop" on:mousedown|self={() => dispatch("close")}>
-  <div class="palette" role="dialog" aria-label="Search notes">
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Search notes">
     <input
       bind:this={input}
       bind:value={query}
       on:keydown={onKey}
       placeholder="Search notes, or type > for commands"
+      aria-label="Search notes, or type > for commands"
       spellcheck="false"
     />
     <ul bind:this={list} role="listbox">

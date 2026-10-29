@@ -237,3 +237,17 @@ button {
 .preview .tok-propertyName {
   color: var(--syn-property);
 }
+
+/* Keyboard focus is always visible; mouse clicks don't leave a ring. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+/* Text areas that are always being typed in show their caret instead. */
+.cm-content:focus-visible,
+input.title:focus-visible {
+  outline: none;
+}

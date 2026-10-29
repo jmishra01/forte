@@ -2,6 +2,7 @@
   import { createEventDispatcher, onMount } from "svelte";
   import { ask } from "@tauri-apps/plugin-dialog";
   import { api, type TrashItem } from "./api";
+  import { Folder, Note } from "./icons";
 
   const dispatch = createEventDispatcher<{ restored: string; error: string; close: void }>();
   let items: TrashItem[] = [];
@@ -73,7 +74,7 @@
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div class="backdrop" on:mousedown|self={() => dispatch("close")} on:keydown={(e) => e.key === "Escape" && dispatch("close")}>
-  <div class="dialog" role="dialog" aria-label="Trash">
+  <div class="dialog" role="dialog" aria-modal="true" aria-label="Trash">
     <header>
       <h2>Trash</h2>
       {#if items.length}<button class="danger" on:click={emptyAll}>Empty trash</button>{/if}
@@ -85,7 +86,10 @@
       {#each items as item (item.name)}
         <li>
           <div class="what">
-            <span class="name">{item.isDir ? "📁 " : ""}{label(item)}</span>
+            <span class="name">
+              <svelte:component this={item.isDir ? Folder : Note} size={14} strokeWidth={1.75} aria-hidden="true" />
+              {label(item)}
+            </span>
             <span class="meta">
               {#if item.original}from {item.original.includes("/") ? item.original.slice(0, item.original.lastIndexOf("/")) : "top level"}{/if}
               {#if item.deletedAt} · deleted {when(item.deletedAt)}{/if}
@@ -150,7 +154,9 @@
     min-width: 0;
   }
   .name {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
