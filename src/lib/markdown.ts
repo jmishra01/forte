@@ -112,8 +112,17 @@ export function renderMarkdown(
 ): string {
   resolveForRender = resolve;
   imageSrcForRender = imageSrc;
-  const { props, body } = splitFrontMatter(src);
-  const html = propertiesHtml(props) + (marked.parse(body, { async: false }) as string);
+  const { props, body, lines } = splitFrontMatter(src);
+  // Render block by block, tagging each with the source line it starts on, so a
+  // click in the preview can put the caret at the same place in the editor.
+  const tokens = marked.lexer(body);
+  let line = lines + 1;
+  let html = propertiesHtml(props);
+  for (const tok of tokens) {
+    const part = marked.parser(Object.assign([tok], { links: tokens.links }) as typeof tokens);
+    html += tok.type === "space" ? part : part.replace(/^(\s*<[a-z][a-z0-9]*)/i, `$1 data-line="${line}"`);
+    line += tok.raw.split("\n").length - 1;
+  }
   return DOMPurify.sanitize(html, { ALLOWED_URI_REGEXP });
 }
 

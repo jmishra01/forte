@@ -9,6 +9,13 @@
   --accent: #2d5aa8;
   --danger: #c4433a;
   --code: #a8456b;
+  --syn-keyword: #8b3fa8;
+  --syn-string: #2f7a3d;
+  --syn-comment: #8a8a93;
+  --syn-number: #b35a00;
+  --syn-type: #1f6f8b;
+  --syn-function: #2d5aa8;
+  --syn-property: #7a5a00;
   --text-size: 15px;
   --measure: 820px;
   --editor-font: ui-monospace, "SF Mono", Menlo, monospace;
@@ -28,9 +35,23 @@
     --accent: #7aa7ee;
     --danger: #d85a52;
     --code: #e391b3;
+    --syn-keyword: #d19bf0;
+    --syn-string: #9fd28a;
+    --syn-comment: #7f7f88;
+    --syn-number: #f0a868;
+    --syn-type: #7ccbe0;
+    --syn-function: #8fb5f5;
+    --syn-property: #e3c77a;
   }
 }
 :root[data-theme="dark"] {
+  --syn-keyword: #d19bf0;
+  --syn-string: #9fd28a;
+  --syn-comment: #7f7f88;
+  --syn-number: #f0a868;
+  --syn-type: #7ccbe0;
+  --syn-function: #8fb5f5;
+  --syn-property: #e3c77a;
   --bg: #1e1e21;
   --side: #18181b;
   --border: #333338;
@@ -185,4 +206,34 @@ button {
   body {
     height: auto;
   }
+}
+
+/* Code block colours (classes from @lezer/highlight's classHighlighter). */
+.preview .tok-keyword {
+  color: var(--syn-keyword);
+}
+.preview .tok-string,
+.preview .tok-string2 {
+  color: var(--syn-string);
+}
+.preview .tok-comment {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+.preview .tok-number,
+.preview .tok-bool,
+.preview .tok-atom {
+  color: var(--syn-number);
+}
+.preview .tok-typeName,
+.preview .tok-className,
+.preview .tok-namespace {
+  color: var(--syn-type);
+}
+.preview .tok-definition,
+.preview .tok-macroName {
+  color: var(--syn-function);
+}
+.preview .tok-propertyName {
+  color: var(--syn-property);
 }

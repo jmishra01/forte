@@ -10,7 +10,7 @@
     type SimulationNodeDatum,
   } from "d3-force";
   import { nameOf, type NoteInfo } from "./api";
-  import { resolveLink } from "./markdown";
+  import { linkTarget } from "./links";
 
   export let notes: string[];
   export let index: NoteInfo[];
@@ -39,7 +39,7 @@
       const from = byId.get(note.path);
       if (!from) continue;
       for (const l of note.links) {
-        const to = byId.get(resolveLink(l.target, note.path, notes) ?? "");
+        const to = byId.get(linkTarget(l, note.path, notes) ?? "");
         const key = [note.path, to?.id].sort().join("\n");
         if (!to || to === from || seen.has(key)) continue;
         seen.add(key);

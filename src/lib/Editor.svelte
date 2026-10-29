@@ -10,6 +10,7 @@
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { HighlightStyle, indentUnit, syntaxHighlighting } from "@codemirror/language";
   import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+  import { languages } from "@codemirror/language-data";
   import { autocompletion, type CompletionContext } from "@codemirror/autocomplete";
   import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
   import { tags } from "@lezer/highlight";
@@ -82,6 +83,14 @@
     { tag: [tags.quote, tags.processingInstruction, tags.contentSeparator, tags.labelName], color: "var(--muted)" },
     { tag: tags.list, color: "var(--muted)" },
     { tag: tags.meta, color: "var(--muted)" },
+    // Inside code blocks; the same colours as the preview's tok-* classes.
+    { tag: [tags.keyword, tags.operatorKeyword, tags.modifier, tags.controlKeyword], color: "var(--syn-keyword)" },
+    { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "var(--syn-string)" },
+    { tag: [tags.comment, tags.lineComment, tags.blockComment], color: "var(--syn-comment)", fontStyle: "italic" },
+    { tag: [tags.number, tags.bool, tags.atom, tags.null], color: "var(--syn-number)" },
+    { tag: [tags.typeName, tags.className, tags.namespace], color: "var(--syn-type)" },
+    { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: "var(--syn-function)" },
+    { tag: [tags.propertyName, tags.attributeName], color: "var(--syn-property)" },
   ]);
 
   const theme = EditorView.theme({
@@ -139,7 +148,8 @@
           drawSelection(),
           EditorView.lineWrapping,
           indentUnit.of("  "),
-          markdown({ base: markdownLanguage }), // GFM; Enter continues lists and quotes
+          // GFM; Enter continues lists and quotes; ```lang blocks are parsed as that language.
+          markdown({ base: markdownLanguage, codeLanguages: languages }),
           syntaxHighlighting(highlight),
           autocompletion({ override: [linkCompletions], icons: false }),
           search({ top: true }),
@@ -197,6 +207,14 @@
       selection: { anchor: l.from },
       effects: EditorView.scrollIntoView(l.from, { y: "start", yMargin: 60 }),
     });
+    view.focus();
+  }
+
+  /** Puts the caret at character `pos` and scrolls it into view. */
+  export function setCursor(pos: number) {
+    if (!view) return;
+    const at = Math.max(0, Math.min(pos, view.state.doc.length));
+    view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
     view.focus();
   }
 

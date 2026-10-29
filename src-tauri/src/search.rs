@@ -1,6 +1,9 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 /// One matching line of a note.
 #[derive(Serialize, Debug, PartialEq)]
@@ -12,7 +15,7 @@ pub struct Hit {
 }
 
 /// What one note links to and how it is tagged.
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq, Clone)]
 pub struct NoteInfo {
     pub path: String,
     pub links: Vec<Link>,
@@ -20,12 +23,15 @@ pub struct NoteInfo {
     pub tags: Vec<String>,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq, Clone)]
 pub struct Link {
-    /// What is between `[[` and `|` or `]]`, trimmed.
+    /// For `[[wiki]]` links, what is between `[[` and `|` or `]]`, trimmed. For
+    /// markdown links, the `.md` path as written (relative to the note, maybe URL-encoded).
     pub target: String,
     pub line: usize,
     pub text: String,
+    /// "wiki" or "md".
+    pub kind: &'static str,
 }
 
 const HITS_PER_NOTE: usize = 3;
@@ -94,15 +100,60 @@ fn snippet(line: &str, q: &str) -> String {
     s
 }
 
+/// What a note contains that the app asks about on every change.
+#[derive(Clone)]
+pub struct Facts {
+    pub info: NoteInfo,
+    /// Has `<<<<<<<` … `>>>>>>>` blocks from a Git merge.
+    pub markers: bool,
+}
+
+/// Facts per file, reused while the file's modification time and size are unchanged,
+/// so a refresh after each save only re-reads the notes that changed.
+static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, u64, Facts)>>> = OnceLock::new();
+
+fn cache() -> std::sync::MutexGuard<'static, HashMap<PathBuf, (SystemTime, u64, Facts)>> {
+    CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Forgets `file`, for when it was just written (a fast second write can keep the same time and size).
+pub fn forget(file: &Path) {
+    cache().remove(file);
+}
+
+/// Facts for every note under `root`, read from disk only where a note changed.
+pub fn facts(root: &Path) -> Vec<Facts> {
+    let files = note_files(root);
+    let mut out = Vec::with_capacity(files.len());
+    let mut cache = cache();
+    for file in &files {
+        let Ok(meta) = fs::metadata(file) else { continue };
+        let (modified, len) = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
+        let path = super::vault::to_rel(root, file);
+        if let Some((m, l, f)) = cache.get(file) {
+            // The same file reached by its path; the vault-relative path is rebuilt in case the vault moved.
+            if *m == modified && *l == len && f.info.path == path {
+                out.push(f.clone());
+                continue;
+            }
+        }
+        let Ok(text) = fs::read_to_string(file) else { continue };
+        let f = Facts { info: note_info(path, &text), markers: crate::conflicts::has_markers(&text) };
+        cache.insert(file.clone(), (modified, len, f.clone()));
+        out.push(f);
+    }
+    // Drop notes under this vault that are gone.
+    let present: std::collections::HashSet<&PathBuf> = files.iter().collect();
+    cache.retain(|p, _| !p.starts_with(root) || present.contains(p));
+    out
+}
+
 /// Links and tags of every note that has any.
 pub fn index(root: &Path) -> Vec<NoteInfo> {
-    note_files(root)
+    facts(root)
         .into_iter()
-        .filter_map(|file| {
-            let text = fs::read_to_string(&file).ok()?;
-            let info = note_info(super::vault::to_rel(root, &file), &text);
-            (!info.links.is_empty() || !info.tags.is_empty()).then_some(info)
-        })
+        .map(|f| f.info)
+        .filter(|info| !info.links.is_empty() || !info.tags.is_empty())
         .collect()
 }
 
@@ -118,11 +169,9 @@ fn note_info(path: String, text: &str) -> NoteInfo {
     front_matter_tags(front).into_iter().for_each(&mut add_tag);
     let mut in_fence = false;
     for (i, line) in text.lines().enumerate() {
-        links.extend(wikilinks(line).into_iter().map(|target| Link {
-            target,
-            line: i + 1,
-            text: snippet(line, ""),
-        }));
+        let link = |kind| move |target| Link { target, line: i + 1, text: snippet(line, ""), kind };
+        links.extend(wikilinks(line).into_iter().map(link("wiki")));
+        links.extend(markdown_links(line).into_iter().map(link("md")));
         if i < body_start {
             continue;
         }
@@ -239,6 +288,33 @@ fn wikilinks(line: &str) -> Vec<String> {
     out
 }
 
+/// Targets of `[text](note.md)` and `[text](<my note.md#part>)` links to other
+/// notes: relative paths ending in `.md`, not URLs. A `#part` is dropped.
+fn markdown_links(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(i) = rest.find("](") {
+        rest = &rest[i + 2..];
+        let (raw, after) = match rest.strip_prefix('<') {
+            Some(inner) => match inner.find('>') {
+                Some(end) => (&inner[..end], &inner[end + 1..]),
+                None => break,
+            },
+            None => {
+                let end = rest.find(|c: char| c == ')' || c.is_whitespace()).unwrap_or(rest.len());
+                (&rest[..end], &rest[end..])
+            }
+        };
+        rest = after;
+        let path = raw.split('#').next().unwrap_or("");
+        let is_url = path.split('/').next().is_some_and(|first| first.contains(':'));
+        if path.to_lowercase().ends_with(".md") && !is_url && !path.starts_with('/') {
+            out.push(path.to_string());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,8 +379,36 @@ mod tests {
         write(dir.path(), "c.md", "just #tagged");
         let all = index(dir.path());
         assert_eq!(all.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), ["a.md", "c.md"]);
-        assert_eq!(all[0].links, vec![Link { target: "B".into(), line: 2, text: "links to [[B]]".into() }]);
+        assert_eq!(all[0].links, vec![Link { target: "B".into(), line: 2, text: "links to [[B]]".into(), kind: "wiki" }]);
         assert_eq!(all[1].tags, ["tagged"]);
+    }
+
+    #[test]
+    fn index_cache_notices_edits_and_deletions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(root, "a.md", "#one");
+        write(root, "b.md", "#two");
+        assert_eq!(index(root).len(), 2);
+        // Rewritten with the same length: forget() makes sure it is read again.
+        write(root, "a.md", "#uno");
+        forget(&root.join("a.md"));
+        assert_eq!(index(root).iter().find(|n| n.path == "a.md").unwrap().tags, ["uno"]);
+        fs::remove_file(root.join("b.md")).unwrap();
+        assert_eq!(index(root).iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), ["a.md"]);
+        assert!(!cache().contains_key(&root.join("b.md")));
+    }
+
+    #[test]
+    fn markdown_links_to_notes_only() {
+        assert_eq!(
+            markdown_links("see [a](Plan.md), [b](../work/Ideas.md#top) and [c](<My Note.md>)"),
+            ["Plan.md", "../work/Ideas.md", "My Note.md"]
+        );
+        assert_eq!(markdown_links("[x](https://e.com/a.md) [y](/abs.md) [z](pic.png) [w](#here)"), Vec::<String>::new());
+        assert_eq!(markdown_links("[enc](My%20Note.md \"title\")"), ["My%20Note.md"]);
+        let info = note_info("n.md".into(), "[[Wiki]] and [md](Other.md)");
+        assert_eq!(info.links.iter().map(|l| (l.kind, l.target.as_str())).collect::<Vec<_>>(), [("wiki", "Wiki"), ("md", "Other.md")]);
     }
 
     #[test]
@@ -327,5 +431,45 @@ mod tests {
         // Not front matter unless it starts the file and is closed.
         assert_eq!(note_info("n.md".into(), "text\n---\ntags: x\n---\n").tags, Vec::<String>::new());
         assert_eq!(front_matter("---\ntags: x\nnever closed"), ("", 0));
+    }
+}
+
+/// Timing on a 5,000-note vault: `cargo test --release bench_ -- --ignored --nocapture`.
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    fn bench_index_and_search_5000_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for i in 0..5000 {
+            let sub = root.join(format!("folder{}", i % 50));
+            fs::create_dir_all(&sub).unwrap();
+            let body = format!(
+                "---\ntags: [t{}, project]\n---\n# Note {i}\n\nSee [[Note {}]] and [x](../folder{}/Note {}.md). #topic{}\n{}\n",
+                i % 20,
+                (i + 1) % 5000,
+                (i + 7) % 50,
+                (i + 7) % 5000,
+                i % 30,
+                "Some ordinary sentence about notes and ideas. ".repeat(40)
+            );
+            fs::write(sub.join(format!("Note {i}.md")), body).unwrap();
+        }
+        let time = |label: &str, f: &dyn Fn() -> usize| {
+            let start = Instant::now();
+            let n = f();
+            println!("{label}: {:>6.1} ms ({n} results)", start.elapsed().as_secs_f64() * 1000.0);
+        };
+        for round in ["first", "again"] {
+            time(&format!("index  ({round})"), &|| index(root).len());
+            time(&format!("search ({round})"), &|| search(root, "ordinary sentence", 200).len());
+        }
+        fs::write(root.join("folder3/Note 3.md"), "changed [[Note 9]]").unwrap();
+        time("index  (one note changed)", &|| index(root).len());
+        time("conflicts", &|| crate::conflicts::find(root).len());
     }
 }

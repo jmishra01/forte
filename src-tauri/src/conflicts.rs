@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use tauri::State;
 
-use crate::search::note_files;
+use crate::search::facts;
 use crate::trash::move_to_trash;
 use crate::vault::{resolve, root, to_rel, unique_path, AppState};
 
@@ -39,8 +39,9 @@ pub(crate) fn has_markers(text: &str) -> bool {
 
 pub fn find(root: &Path) -> Vec<Conflict> {
     let mut out = Vec::new();
-    for file in note_files(root) {
-        let path = to_rel(root, &file);
+    for f in facts(root) {
+        let path = f.info.path;
+        let file = root.join(&path);
         let stem = file.file_stem().unwrap_or_default().to_string_lossy();
         if let Some(base) = copy_of(&stem) {
             let original = file.with_file_name(format!("{}.md", base.trim_end()));
@@ -49,7 +50,7 @@ pub fn find(root: &Path) -> Vec<Conflict> {
                 kind: "copy",
                 original: original.is_file().then(|| to_rel(root, &original)),
             });
-        } else if fs::read_to_string(&file).is_ok_and(|t| has_markers(&t)) {
+        } else if f.markers {
             out.push(Conflict { path, kind: "markers", original: None });
         }
     }
@@ -88,8 +89,9 @@ pub fn settle(root: &Path, copy: &str, keep: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn find_conflicts(state: State<AppState>) -> Vec<Conflict> {
-    find(&root(&state))
+pub async fn find_conflicts(state: State<'_, AppState>) -> Result<Vec<Conflict>, String> {
+    let root = root(&state);
+    tauri::async_runtime::spawn_blocking(move || find(&root)).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
