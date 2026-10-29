@@ -1,0 +1,204 @@
+<script lang="ts">
+  import { createEventDispatcher, onMount, tick } from "svelte";
+  import { api, dirOf, nameOf, type Hit } from "./api";
+
+  /** All note paths, for matching by name. */
+  export let notes: string[];
+
+  type Item = { path: string; line?: number; text?: string };
+
+  const dispatch = createEventDispatcher<{ choose: Item; close: void }>();
+  let query = "";
+  let hits: Hit[] = [];
+  let index = 0;
+  let input: HTMLInputElement;
+  let list: HTMLElement;
+  let searchTimer: ReturnType<typeof setTimeout>;
+  let searchId = 0;
+
+  $: q = query.trim().toLowerCase();
+  // Name matches first (prefix matches before others), then lines that contain the text.
+  $: byName = q
+    ? notes
+        .filter((p) => nameOf(p).toLowerCase().includes(q))
+        .sort((a, b) => rank(a) - rank(b) || nameOf(a).localeCompare(nameOf(b)))
+        .slice(0, 20)
+    : notes.slice(0, 20);
+  $: items = [...byName.map((path): Item => ({ path })), ...hits] as Item[];
+  $: if (index >= items.length) index = Math.max(0, items.length - 1);
+  $: search(q);
+
+  const rank = (p: string) => (nameOf(p).toLowerCase().startsWith(q) ? 0 : 1);
+
+  function search(q: string) {
+    clearTimeout(searchTimer);
+    const id = ++searchId;
+    if (!q) {
+      hits = [];
+      return;
+    }
+    searchTimer = setTimeout(async () => {
+      const found = await api.search(q).catch(() => []);
+      if (id === searchId) hits = found;
+    }, 120);
+  }
+
+  async function move(by: number) {
+    if (!items.length) return;
+    index = (index + by + items.length) % items.length;
+    await tick();
+    list?.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      move(1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      move(-1);
+    } else if (e.key === "Enter" && items[index]) {
+      e.preventDefault();
+      dispatch("choose", items[index]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      dispatch("close");
+    }
+  }
+
+  /** `text` split around case-insensitive matches of `q`, for highlighting. */
+  function parts(text: string, q: string) {
+    if (!q) return [{ text, match: false }];
+    const out: { text: string; match: boolean }[] = [];
+    const lower = text.toLowerCase();
+    let i = 0;
+    for (let j = lower.indexOf(q); j !== -1; j = lower.indexOf(q, j + q.length)) {
+      if (j > i) out.push({ text: text.slice(i, j), match: false });
+      out.push({ text: text.slice(j, j + q.length), match: true });
+      i = j + q.length;
+    }
+    if (i < text.length) out.push({ text: text.slice(i), match: false });
+    return out;
+  }
+
+  onMount(() => input.focus());
+</script>
+
+<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+<div class="backdrop" on:mousedown|self={() => dispatch("close")}>
+  <div class="palette" role="dialog" aria-label="Search notes">
+    <input
+      bind:this={input}
+      bind:value={query}
+      on:keydown={onKey}
+      placeholder="Search note names and text…"
+      spellcheck="false"
+    />
+    <ul bind:this={list} role="listbox">
+      {#each items as item, i (item.path + ":" + (item.line ?? ""))}
+        {#if i === byName.length && hits.length}<li class="group" role="presentation">In note text</li>{/if}
+        <li
+          role="option"
+          aria-selected={i === index}
+          class:sel={i === index}
+          on:mousemove={() => (index = i)}
+          on:click={() => dispatch("choose", item)}
+        >
+          <span class="name">
+            {#each parts(nameOf(item.path), item.line ? "" : q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
+          </span>
+          {#if dirOf(item.path)}<span class="where">{dirOf(item.path)}</span>{/if}
+          {#if item.text}
+            <span class="text">
+              {#each parts(item.text, q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
+            </span>
+          {/if}
+        </li>
+      {:else}
+        <li class="none">No matches</li>
+      {/each}
+    </ul>
+  </div>
+</div>
+
+<style>
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.25);
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding-top: 12vh;
+    z-index: 20;
+  }
+  .palette {
+    width: min(600px, calc(100vw - 32px));
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+  }
+  input {
+    padding: 12px 14px;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: none;
+    color: var(--text);
+    font-size: 15px;
+    outline: none;
+  }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 4px;
+    overflow-y: auto;
+  }
+  li {
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  li.sel {
+    background: var(--active);
+  }
+  .name {
+    font-weight: 500;
+  }
+  .where {
+    margin-left: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .text {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  mark {
+    background: none;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .group {
+    padding: 8px 10px 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    cursor: default;
+  }
+  .none {
+    color: var(--muted);
+    cursor: default;
+  }
+</style>

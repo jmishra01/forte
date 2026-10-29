@@ -2,9 +2,12 @@
   import { onDestroy, onMount, tick } from "svelte";
   import { ask, open as openDialog } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { api, dirOf, nameOf, type Entry } from "./lib/api";
-  import { renderMarkdown, resolveLink } from "./lib/markdown";
+  import { convertFileSrc } from "@tauri-apps/api/core";
+  import { api, dirOf, nameOf, type Entry, type NoteLinks } from "./lib/api";
+  import { relativeHref, renderMarkdown, resolveLink, resolveRelative } from "./lib/markdown";
+  import { backlinks, linkFor, rewriteLinks } from "./lib/links";
   import Tree from "./lib/Tree.svelte";
+  import Palette from "./lib/Palette.svelte";
   import { caretCoords } from "./lib/caret";
   import { renderDiagrams } from "./lib/diagrams";
 
@@ -17,7 +20,13 @@
   let mode: "edit" | "preview" = "edit";
   let renaming: string | null = null;
   let filter = "";
-  let error = "";
+  let toast: { text: string; kind: "error" | "info" } | null = null;
+  let toastTimer: ReturnType<typeof setTimeout>;
+  let paletteOpen = false;
+  let index: NoteLinks[] = [];
+  /** Notes visited, for back/forward; `place` is the current position in it. */
+  let history: string[] = [];
+  let place = -1;
   let rootDrop = false;
   let editor: HTMLTextAreaElement;
   let previewEl: HTMLElement;
@@ -27,16 +36,29 @@
   $: filtered = filter.trim()
     ? notes.filter((p) => nameOf(p).toLowerCase().includes(filter.trim().toLowerCase()))
     : [];
-  $: html = current && mode === "preview" ? renderMarkdown(content, (t: string) => resolveLink(t, current!, notes)) : "";
+  $: html =
+    current && mode === "preview"
+      ? renderMarkdown(content, (t: string) => resolveLink(t, current!, notes), imageSrc)
+      : "";
+  $: incoming = current ? backlinks(current, index, notes) : [];
+  $: canBack = history.slice(0, place).some((p) => notes.includes(p));
+  $: canForward = history.slice(place + 1).some((p) => notes.includes(p));
+
+  /** Relative images point at files in the vault, served over Tauri's asset protocol. */
+  function imageSrc(href: string) {
+    const rel = current && resolveRelative(href, current);
+    return rel ? convertFileSrc(`${vault}/${rel}`) : href;
+  }
   $: if (html) tick().then(() => previewEl && renderDiagrams(previewEl));
 
   function flatten(entries: Entry[]): string[] {
     return entries.flatMap((e) => (e.isDir ? flatten(e.children) : [e.path]));
   }
 
-  function flash(message: string) {
-    error = message;
-    setTimeout(() => (error = ""), 4000);
+  function flash(text: string, kind: "error" | "info" = "error") {
+    toast = { text, kind };
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => (toast = null), 4000);
   }
 
   async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
@@ -48,7 +70,7 @@
   }
 
   async function refresh() {
-    tree = (await run(api.listTree)) ?? [];
+    [tree, index] = await Promise.all([run(api.listTree).then((t) => t ?? []), api.linkIndex().catch(() => index)]);
   }
 
   // --- saving ---------------------------------------------------------------
@@ -131,16 +153,43 @@
     expanded = expanded;
   }
 
-  async function openNote(path: string, forceMode?: "edit" | "preview") {
+  /**
+   * Opens `path`. With `line` (1-based), opens it for editing with the caret on that line.
+   * `fromHistory` is set by back/forward, which move through history instead of adding to it.
+   */
+  async function openNote(path: string, forceMode?: "edit" | "preview", line?: number, fromHistory = false) {
     await flush();
     const text = await run(() => api.readNote(path));
-    if (text === undefined) return;
+    if (text === undefined) return false;
     current = path;
     title = nameOf(path);
     content = text;
     saved = text;
-    mode = forceMode ?? (text.trim() ? "preview" : "edit");
+    mode = line ? "edit" : forceMode ?? (text.trim() ? "preview" : "edit");
     expandTo(path);
+    if (!fromHistory && history[place] !== path) {
+      history = [...history.slice(0, place + 1), path];
+      place = history.length - 1;
+    }
+    if (line) {
+      await tick();
+      if (!editor) return true;
+      const at = text.split("\n").slice(0, line - 1).join("\n").length + (line > 1 ? 1 : 0);
+      editor.focus();
+      editor.setSelectionRange(at, at);
+      // Put the line near the top rather than wherever the browser scrolls to.
+      const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 22;
+      editor.scrollTop = Math.max(0, (line - 4) * lineHeight);
+    }
+    return true;
+  }
+
+  async function go(step: -1 | 1) {
+    for (let i = place + step; i >= 0 && i < history.length; i += step) {
+      if (!notes.includes(history[i])) continue; // deleted since
+      if (await openNote(history[i], undefined, undefined, true)) place = i;
+      return;
+    }
   }
 
   async function newNote(dir = "") {
@@ -161,26 +210,60 @@
     renaming = path;
   }
 
-  /** Keep `current` pointing at the same note after `from` was renamed or moved to `to`. */
+  /** Where `path` is after `from` was renamed or moved to `to`. */
+  function remap(path: string, from: string, to: string) {
+    if (path === from) return to;
+    if (path.startsWith(from + "/")) return to + path.slice(from.length);
+    return path;
+  }
+
+  /** Keep `current` and history pointing at the same notes after `from` was renamed or moved to `to`. */
   function repoint(from: string, to: string) {
-    if (!current) return;
-    if (current === from) current = to;
-    else if (current.startsWith(from + "/")) current = to + current.slice(from.length);
-    else return;
+    history = history.map((p) => remap(p, from, to));
+    if (!current || remap(current, from, to) === current) return;
+    current = remap(current, from, to);
     if (pending) pending.path = current;
     title = nameOf(current);
     expandTo(current);
   }
 
+  /**
+   * Renames or moves `path` with `change`, then fixes `[[links]]` in other notes
+   * that would no longer find their target. Returns the new path.
+   */
+  async function relocate(path: string, change: () => Promise<string>) {
+    await flush();
+    const oldNotes = notes;
+    const oldIndex = await api.linkIndex().catch(() => index);
+    const to = await run(change);
+    if (!to) return;
+    repoint(path, to);
+    await refresh();
+
+    const moved = new Map(oldNotes.map((n) => [n, remap(n, path, to)] as const).filter(([a, b]) => a !== b));
+    const texts = new Map<string, string>();
+    for (const note of oldIndex) {
+      const newPath = moved.get(note.path) ?? note.path;
+      const text = newPath === current ? content : await api.readNote(newPath).catch(() => undefined);
+      if (text !== undefined) texts.set(note.path, text);
+    }
+    const updates = rewriteLinks(moved, oldNotes, notes, texts);
+    for (const [notePath, text] of updates) {
+      if (notePath === current) content = saved = text;
+      await run(() => api.writeNote(notePath, text));
+    }
+    if (updates.size) {
+      flash(`Updated links in ${updates.size} note${updates.size === 1 ? "" : "s"}`, "info");
+      await refresh();
+    }
+    return to;
+  }
+
   async function renameEntry(path: string, name: string) {
     renaming = null;
     if (!name.trim() || name.trim() === nameOf(path)) return;
-    await flush();
-    const to = await run(() => api.rename(path, name));
-    if (!to) return;
-    if (expanded.delete(path)) expanded.add(to);
-    repoint(path, to);
-    await refresh();
+    const to = await relocate(path, () => api.rename(path, name));
+    if (to && expanded.delete(path)) expanded = expanded.add(to);
   }
 
   async function renameCurrent() {
@@ -190,12 +273,8 @@
 
   async function moveEntry(path: string, dir: string) {
     if (dirOf(path) === dir) return;
-    await flush();
-    const to = await run(() => api.move(path, dir));
-    if (!to) return;
-    if (dir) expanded.add(dir);
-    repoint(path, to);
-    await refresh();
+    const to = await relocate(path, () => api.move(path, dir));
+    if (to && dir) expanded = expanded.add(dir);
   }
 
   async function deleteEntry(path: string) {
@@ -217,6 +296,8 @@
     await run(() => api.setVault(dir));
     vault = dir;
     current = null;
+    history = [];
+    place = -1;
     expanded = new Set();
     await refresh();
   }
@@ -267,7 +348,13 @@
 
   function onKey(e: KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
-    if (mod && e.key === "n") {
+    if (mod && (e.key === "k" || (e.shiftKey && e.key.toLowerCase() === "f"))) {
+      e.preventDefault();
+      paletteOpen = true;
+    } else if (mod && (e.key === "[" || e.key === "]")) {
+      e.preventDefault();
+      go(e.key === "[" ? -1 : 1);
+    } else if (mod && e.key === "n") {
       e.preventDefault();
       newNote(current ? dirOf(current) : "");
     } else if (mod && e.key === "e" && current) {
@@ -287,11 +374,7 @@
 
   $: pickerItems = picker ? pickerMatches(picker.trigger, picker.query) : [];
 
-  /** Shortest link text that still points at `path`: the bare name unless another note shares it. */
-  function linkFor(path: string) {
-    const name = nameOf(path);
-    return notes.filter((n) => nameOf(n) === name).length === 1 ? name : path.replace(/\.md$/, "");
-  }
+
 
   function pickerMatches(trigger: string, query: string): PickerItem[] {
     const q = query.trim().toLowerCase();
@@ -300,7 +383,7 @@
       .filter((p) => p !== current && p.toLowerCase().replace(/\.md$/, "").includes(q))
       .sort((a, b) => starts(a) - starts(b) || nameOf(a).localeCompare(nameOf(b)))
       .slice(0, 8)
-      .map((p) => ({ label: nameOf(p), hint: dirOf(p), link: linkFor(p) }));
+      .map((p) => ({ label: nameOf(p), hint: dirOf(p), link: linkFor(p, notes) }));
     // "[[" is clearly a link, so offer to link a note that doesn't exist yet.
     // A plain "/" is too common in normal text (paths, dates) to do that.
     if (trigger === "[[" && q && !items.some((i) => i.label.toLowerCase() === q)) {
@@ -368,6 +451,54 @@
   const unlisten = api.onVaultChanged(onDiskChange);
   onDestroy(() => unlisten.then((stop) => stop()));
 
+  // --- images pasted or dropped into the editor -----------------------------
+
+  function imageFiles(data: DataTransfer | null) {
+    return Array.from(data?.files ?? []).filter((f) => f.type.startsWith("image/"));
+  }
+
+  /** Local time as "2026-10-29 14-05-09", safe in file names. */
+  function timestamp() {
+    const d = new Date();
+    const two = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}-${two(d.getMinutes())}-${two(d.getSeconds())}`;
+  }
+
+  async function insertImages(files: File[]) {
+    const note = current;
+    if (!note) return;
+    const at = editor.selectionStart;
+    let text = "";
+    for (const file of files) {
+      // Clipboard images are all called "image.png"; give them a findable name.
+      const name =
+        !file.name || file.name === "image.png"
+          ? `Pasted image ${timestamp()}.${file.type.split("/")[1] || "png"}`
+          : file.name;
+      const rel = await run(() => api.saveAttachment(name, file));
+      if (rel) text += `![](${relativeHref(rel, note)})\n`;
+    }
+    if (!text || current !== note) return;
+    content = content.slice(0, at) + text + content.slice(at);
+    scheduleSave();
+    await tick();
+    editor?.setSelectionRange(at + text.length, at + text.length);
+  }
+
+  function onEditorPaste(e: ClipboardEvent) {
+    const files = imageFiles(e.clipboardData);
+    if (!files.length) return;
+    e.preventDefault();
+    insertImages(files);
+  }
+
+  function onEditorDrop(e: DragEvent) {
+    const files = imageFiles(e.dataTransfer);
+    if (!files.length) return;
+    e.preventDefault();
+    insertImages(files);
+  }
+
   onMount(async () => {
     vault = (await run(api.getVault)) ?? "";
     await refresh();
@@ -379,7 +510,7 @@
 <div class="app">
   <aside>
     <div class="side-head">
-      <input class="search" placeholder="Search notes" bind:value={filter} />
+      <input class="search" placeholder="Filter by name" bind:value={filter} />
       <button title="New note (⌘N)" on:click={() => newNote()}>+</button>
       <button title="New folder" on:click={() => newFolder()}>⊞</button>
     </div>
@@ -440,6 +571,10 @@
   <main>
     {#if current}
       <header>
+        <div class="nav">
+          <button title="Back (⌘[)" disabled={!canBack} on:click={() => go(-1)}>‹</button>
+          <button title="Forward (⌘])" disabled={!canForward} on:click={() => go(1)}>›</button>
+        </div>
         <input
           class="title"
           bind:this={titleInput}
@@ -463,6 +598,8 @@
             on:keyup={() => updatePicker(false)}
             on:click={() => updatePicker(false)}
             on:blur={stopEditing}
+            on:paste={onEditorPaste}
+            on:drop={onEditorDrop}
             spellcheck="false"
             placeholder="Write markdown here. Type / or [[ to link another note."
           />
@@ -489,15 +626,39 @@
           {@html html}
         </article>
       {/if}
+
+      {#if incoming.length}
+        <section class="backlinks">
+          <h2>Linked from {incoming.length} {incoming.length === 1 ? "place" : "places"}</h2>
+          {#each incoming as hit (hit.path + ":" + hit.line)}
+            <button on:click={() => openNote(hit.path, undefined, hit.line)}>
+              <span class="name">{nameOf(hit.path)}</span>
+              {#if dirOf(hit.path)}<span class="where-inline">{dirOf(hit.path)}</span>{/if}
+              <span class="snippet">{hit.text}</span>
+            </button>
+          {/each}
+        </section>
+      {/if}
     {:else}
       <div class="empty">
         <p>Select a note or create a new one.</p>
-        <p class="hint">⌘N new note · click a note to edit, click away (or Esc) to preview · [[Note name]] links a note</p>
+        <p class="hint">⌘N new note · ⌘K search · click a note to edit, click away (or Esc) to preview · [[Note name]] links a note</p>
       </div>
     {/if}
   </main>
 
-  {#if error}<div class="toast">{error}</div>{/if}
+  {#if toast}<div class="toast" class:info={toast.kind === "info"}>{toast.text}</div>{/if}
+
+  {#if paletteOpen}
+    <Palette
+      {notes}
+      on:close={() => (paletteOpen = false)}
+      on:choose={(e) => {
+        paletteOpen = false;
+        openNote(e.detail.path, undefined, e.detail.line);
+      }}
+    />
+  {/if}
 </div>
 
 <style>
@@ -681,6 +842,76 @@
   .picker .where {
     display: inline;
     margin-left: 6px;
+  }
+  .nav {
+    display: flex;
+    gap: 2px;
+  }
+  .nav button {
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 5px;
+    background: none;
+    color: var(--muted);
+    font-size: 18px;
+    line-height: 1;
+  }
+  .nav button:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .nav button:disabled {
+    opacity: 0.35;
+  }
+  .backlinks {
+    flex-shrink: 0;
+    max-height: 30%;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+    padding: 10px 22px 14px;
+  }
+  .backlinks h2 {
+    margin: 0 6px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .backlinks button {
+    display: block;
+    width: 100%;
+    max-width: 800px;
+    text-align: left;
+    border: none;
+    background: none;
+    color: var(--text);
+    padding: 5px 6px;
+    border-radius: 5px;
+    font-size: 13px;
+  }
+  .backlinks button:hover {
+    background: var(--hover);
+  }
+  .backlinks .name {
+    font-weight: 500;
+  }
+  .where-inline {
+    margin-left: 6px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .snippet {
+    display: block;
+    color: var(--muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .toast.info {
+    background: var(--accent);
   }
   .toast {
     position: fixed;

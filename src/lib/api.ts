@@ -8,6 +8,17 @@ export interface Entry {
   children: Entry[];
 }
 
+export interface Hit {
+  path: string;
+  line: number; // 1-based
+  text: string;
+}
+
+export interface NoteLinks {
+  path: string;
+  links: { target: string; line: number; text: string }[];
+}
+
 export const api = {
   getVault: () => invoke<string>("get_vault"),
   setVault: (path: string) => invoke<void>("set_vault", { path }),
@@ -19,6 +30,13 @@ export const api = {
   rename: (path: string, name: string) => invoke<string>("rename_entry", { path, name }),
   move: (path: string, dir: string) => invoke<string>("move_entry", { path, dir }),
   remove: (path: string) => invoke<void>("delete_entry", { path }),
+  search: (query: string) => invoke<Hit[]>("search_notes", { query }),
+  linkIndex: () => invoke<NoteLinks[]>("link_index"),
+  /** Stores `data` under `attachments/` and returns its vault-relative path. */
+  saveAttachment: async (name: string, data: Blob) =>
+    invoke<string>("save_attachment", new Uint8Array(await data.arrayBuffer()), {
+      headers: { "x-name": encodeURIComponent(name) },
+    }),
   /** Calls `fn` with the paths that changed on disk, including our own writes. Resolves to an unsubscribe function. */
   onVaultChanged: (fn: (paths: string[]) => void) => listen<string[]>("vault-changed", (e) => fn(e.payload)),
 };

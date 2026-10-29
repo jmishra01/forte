@@ -1,9 +1,16 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import { dirOf, nameOf } from "./api";
 
-// Set by render() so the wikilink renderer can mark links to missing notes.
+// Set by render() so the wikilink renderer can mark links to missing notes,
+// and the image renderer can point relative images at files in the vault.
 let resolveForRender: (target: string) => string | null = () => null;
+let imageSrcForRender: (href: string) => string = (href) => href;
+
+const tex = (src: string, displayMode: boolean) =>
+  katex.renderToString(src, { displayMode, throwOnError: false, output: "htmlAndMathml" });
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -11,7 +18,48 @@ const escapeHtml = (s: string) =>
 marked.use({
   gfm: true,
   breaks: true,
+  useNewRenderer: true, // renderers get the token object, as in marked 14+
+  renderer: {
+    image({ href, title, text }) {
+      const t = title ? ` title="${escapeHtml(title)}"` : "";
+      return `<img src="${escapeHtml(imageSrcForRender(href))}" alt="${escapeHtml(text)}"${t}>`;
+    },
+  },
   extensions: [
+    {
+      // $$ ... $$ on its own lines
+      name: "mathBlock",
+      level: "block",
+      start(src: string) {
+        const i = src.indexOf("$$");
+        return i === -1 ? undefined : i;
+      },
+      tokenizer(src: string) {
+        const m = /^\$\$([\s\S]+?)\$\$[ \t]*(?:\n|$)/.exec(src);
+        if (!m) return undefined;
+        return { type: "mathBlock", raw: m[0], text: m[1].trim() };
+      },
+      renderer(token) {
+        return `<div class="math">${tex(token.text, true)}</div>`;
+      },
+    },
+    {
+      // $x$, but not "$5 and $10": no space just inside the dollars, no digit right after.
+      name: "math",
+      level: "inline",
+      start(src: string) {
+        const i = src.indexOf("$");
+        return i === -1 ? undefined : i;
+      },
+      tokenizer(src: string) {
+        const m = /^\$(?!\s)((?:\\.|[^\\$\n])+?)\$(?!\d)/.exec(src);
+        if (!m || /\s$/.test(m[1])) return undefined;
+        return { type: "math", raw: m[0], text: m[1] };
+      },
+      renderer(token) {
+        return tex(token.text, false);
+      },
+    },
     {
       // [[Note]], [[folder/Note]], [[Note|label]]
       name: "wikilink",
@@ -33,10 +81,48 @@ marked.use({
   ],
 });
 
-export function renderMarkdown(src: string, resolve: (target: string) => string | null): string {
+// DOMPurify's default URL check, plus the asset: scheme Tauri serves vault images from.
+const ALLOWED_URI_REGEXP =
+  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|asset):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+
+export function renderMarkdown(
+  src: string,
+  resolve: (target: string) => string | null,
+  imageSrc: (href: string) => string = (href) => href,
+): string {
   resolveForRender = resolve;
+  imageSrcForRender = imageSrc;
   const html = marked.parse(src, { async: false }) as string;
-  return DOMPurify.sanitize(html);
+  return DOMPurify.sanitize(html, { ALLOWED_URI_REGEXP });
+}
+
+/**
+ * Vault-relative path of a relative image or link `href` written in the note at `from`,
+ * or null for absolute URLs and paths outside the vault.
+ */
+export function resolveRelative(href: string, from: string): string | null {
+  if (/^[a-z][a-z+.-]*:/i.test(href) || href.startsWith("/") || href.startsWith("#")) return null;
+  let path: string;
+  try {
+    path = decodeURIComponent(href.split(/[?#]/)[0]);
+  } catch {
+    return null;
+  }
+  const here = dirOf(from);
+  if ((here ? here.split("/").length : 0) < leadingUps(path)) return null;
+  return normalize(here ? `${here}/${path}` : path) || null;
+}
+
+const leadingUps = (path: string) => /^(?:\.\.\/)*/.exec(path)![0].length / 3;
+
+/** Relative href from the note at `from` to the vault-relative `path`, URL-encoded. */
+export function relativeHref(path: string, from: string): string {
+  const fromParts = dirOf(from) ? dirOf(from).split("/") : [];
+  const toParts = path.split("/");
+  let same = 0;
+  while (same < fromParts.length && same < toParts.length - 1 && fromParts[same] === toParts[same]) same++;
+  const ups = fromParts.slice(same).map(() => "..");
+  return [...ups, ...toParts.slice(same)].map(encodeURIComponent).join("/");
 }
 
 /** Collapse "." and ".." segments of a "/"-separated relative path. */

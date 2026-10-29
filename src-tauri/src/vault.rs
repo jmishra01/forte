@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
-use crate::watch;
+use crate::{search, watch};
 
 /// The vault is a plain folder on disk: sub-folders are folders, `.md` files are notes.
 /// Every path crossing the IPC boundary is relative to the vault root, using `/`.
@@ -59,7 +59,7 @@ fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(root.join(rel))
 }
 
-fn to_rel(root: &Path, p: &Path) -> String {
+pub(crate) fn to_rel(root: &Path, p: &Path) -> String {
     p.strip_prefix(root)
         .unwrap_or(p)
         .components()
@@ -123,6 +123,11 @@ fn read_tree(root: &Path, dir: &Path) -> Vec<Entry> {
     out
 }
 
+/// Lets the preview load images from the vault (and only the vault) over the asset protocol.
+pub fn allow_assets(app: &AppHandle, root: &Path) {
+    let _ = app.asset_protocol_scope().allow_directory(root, true);
+}
+
 #[tauri::command]
 pub fn get_vault(state: State<AppState>) -> String {
     root(&state).to_string_lossy().into_owned()
@@ -135,6 +140,7 @@ pub fn set_vault(app: AppHandle, state: State<AppState>, path: String) -> Result
     let mut cfg = Config::load(&state.config_path);
     cfg.vault = Some(path.clone());
     cfg.save(&state.config_path)?;
+    allow_assets(&app, &path);
     *state.watcher.lock().unwrap() = watch::start(app, &path);
     *state.root.lock().unwrap() = path;
     Ok(())
@@ -179,6 +185,33 @@ pub fn move_entry(state: State<AppState>, path: String, dir: String) -> Result<S
 #[tauri::command]
 pub fn delete_entry(state: State<AppState>, path: String) -> Result<(), String> {
     trash(&root(&state), &path)
+}
+
+#[tauri::command]
+pub fn search_notes(state: State<AppState>, query: String) -> Vec<search::Hit> {
+    search::search(&root(&state), &query, 200)
+}
+
+#[tauri::command]
+pub fn link_index(state: State<AppState>) -> Vec<search::NoteLinks> {
+    search::links(&root(&state))
+}
+
+/// Saves the request body (an image pasted or dropped into a note) under
+/// `<vault>/attachments` and returns its vault-relative path. The file name
+/// comes in the `x-name` header, URL-encoded.
+#[tauri::command]
+pub fn save_attachment(state: State<AppState>, request: tauri::ipc::Request) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected raw bytes".into());
+    };
+    let name = request
+        .headers()
+        .get("x-name")
+        .and_then(|v| v.to_str().ok())
+        .map(percent_decode)
+        .unwrap_or_default();
+    save_attachment_in(&root(&state), &name, bytes)
 }
 
 // The commands above are thin wrappers so the logic below can be tested
@@ -238,6 +271,42 @@ fn move_to(root: &Path, path: &str, dir: &str) -> Result<String, String> {
     }
     fs::rename(&from, &to).map_err(|e| e.to_string())?;
     Ok(to_rel(root, &to))
+}
+
+fn save_attachment_in(root: &Path, name: &str, bytes: &[u8]) -> Result<String, String> {
+    let dir = root.join("attachments");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = Path::new(name);
+    let ext = file.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = clean_name(&stem).unwrap_or_else(|_| "attachment".into());
+    let ext = if ext.chars().all(|c| c.is_ascii_alphanumeric()) { ext } else { String::new() };
+    let p = unique_path(&dir, &stem, &ext);
+    fs::write(&p, bytes).map_err(|e| e.to_string())?;
+    Ok(to_rel(root, &p))
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = (b[i] == b'%' && i + 2 < b.len())
+            .then(|| std::str::from_utf8(&b[i + 1..i + 3]).ok())
+            .flatten()
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match hex {
+            Some(v) => {
+                out.push(v);
+                i += 3;
+            }
+            None => {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Deleted entries go to `<vault>/.trash` instead of being removed for good.
@@ -368,6 +437,23 @@ mod tests {
         assert!(!root.join("n.md").exists());
         assert_eq!(fs::read_to_string(root.join(".trash/n.md")).unwrap(), "first");
         assert_eq!(fs::read_to_string(root.join(".trash/n 1.md")).unwrap(), "second");
+    }
+
+    #[test]
+    fn attachments_get_clean_unique_names() {
+        let (_d, root) = vault();
+        assert_eq!(save_attachment_in(&root, "image.PNG", b"1").unwrap(), "attachments/image.png");
+        assert_eq!(save_attachment_in(&root, "image.png", b"2").unwrap(), "attachments/image 1.png");
+        assert_eq!(save_attachment_in(&root, "../../evil.sh", b"3").unwrap(), "attachments/evil.sh");
+        assert_eq!(save_attachment_in(&root, "", b"4").unwrap(), "attachments/attachment");
+        assert_eq!(fs::read(root.join("attachments/image 1.png")).unwrap(), b"2");
+    }
+
+    #[test]
+    fn percent_decode_handles_utf8_and_bad_escapes() {
+        assert_eq!(percent_decode("caf%C3%A9%20menu.png"), "café menu.png");
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz"), "%zz");
     }
 
     #[test]

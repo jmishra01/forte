@@ -1,3 +1,4 @@
+mod search;
 mod vault;
 mod watch;
 
@@ -23,6 +24,7 @@ pub fn run() {
                 vault::migrate_legacy(cfg.data_dir.as_deref().unwrap_or(&data_dir), &root);
             }
 
+            vault::allow_assets(app.handle(), &root);
             let watcher = watch::start(app.handle().clone(), &root);
             app.manage(AppState {
                 root: Mutex::new(root),
@@ -42,6 +44,9 @@ pub fn run() {
             vault::rename_entry,
             vault::move_entry,
             vault::delete_entry,
+            vault::search_notes,
+            vault::link_index,
+            vault::save_attachment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
