@@ -5,6 +5,7 @@
   import { api, dirOf, nameOf, type Entry } from "./lib/api";
   import { renderMarkdown, resolveLink } from "./lib/markdown";
   import Tree from "./lib/Tree.svelte";
+  import { caretCoords } from "./lib/caret";
 
   let vault = "";
   let tree: Entry[] = [];
@@ -185,6 +186,7 @@
   }
 
   function stopEditing() {
+    picker = null;
     flush();
     if (content.trim()) mode = "preview";
   }
@@ -220,8 +222,84 @@
     }
   }
 
+  // --- note picker: typing "/" or "[[" offers notes to link -----------------
+
+  type PickerItem = { label: string; hint: string; link: string };
+  let picker: { start: number; trigger: string; query: string; index: number; x: number; y: number } | null =
+    null;
+
+  $: pickerItems = picker ? pickerMatches(picker.trigger, picker.query) : [];
+
+  /** Shortest link text that still points at `path`: the bare name unless another note shares it. */
+  function linkFor(path: string) {
+    const name = nameOf(path);
+    return notes.filter((n) => nameOf(n) === name).length === 1 ? name : path.replace(/\.md$/, "");
+  }
+
+  function pickerMatches(trigger: string, query: string): PickerItem[] {
+    const q = query.trim().toLowerCase();
+    const starts = (p: string) => (nameOf(p).toLowerCase().startsWith(q) ? 0 : 1);
+    const items: PickerItem[] = notes
+      .filter((p) => p !== current && p.toLowerCase().replace(/\.md$/, "").includes(q))
+      .sort((a, b) => starts(a) - starts(b) || nameOf(a).localeCompare(nameOf(b)))
+      .slice(0, 8)
+      .map((p) => ({ label: nameOf(p), hint: dirOf(p), link: linkFor(p) }));
+    // "[[" is clearly a link, so offer to link a note that doesn't exist yet.
+    // A plain "/" is too common in normal text (paths, dates) to do that.
+    if (trigger === "[[" && q && !items.some((i) => i.label.toLowerCase() === q)) {
+      items.push({ label: `New note "${query.trim()}"`, hint: "", link: query.trim() });
+    }
+    return items;
+  }
+
+  function updatePicker(typed: boolean) {
+    const pos = editor.selectionStart;
+    if (picker) {
+      const query = content.slice(picker.start + picker.trigger.length, pos);
+      const done = pos !== editor.selectionEnd || pos < picker.start + picker.trigger.length;
+      if (done || /[\n\]]/.test(query) || /^\s/.test(query) || query.length > 60) picker = null;
+      else picker = { ...picker, query, index: query === picker.query ? picker.index : 0 };
+    } else if (typed) {
+      const before = content.slice(0, pos);
+      const trigger = before.endsWith("[[") ? "[[" : before.endsWith("/") && /(^|\s)\/$/.test(before) ? "/" : "";
+      if (!trigger) return;
+      const start = pos - trigger.length;
+      const { x, y, lineHeight } = caretCoords(editor, start);
+      picker = { start, trigger, query: "", index: 0, x: Math.min(x, editor.clientWidth - 300), y: y + lineHeight };
+    }
+  }
+
+  async function choose(item: PickerItem) {
+    if (!picker) return;
+    const end = editor.selectionStart;
+    const text = `[[${item.link}]]`;
+    content = content.slice(0, picker.start) + text + content.slice(end);
+    const caret = picker.start + text.length;
+    picker = null;
+    scheduleSave();
+    await tick();
+    editor.setSelectionRange(caret, caret);
+  }
+
   function onEditorKey(e: KeyboardEvent) {
-    if (e.key === "Escape") editor.blur();
+    if (picker && pickerItems.length) {
+      const n = pickerItems.length;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        picker.index = (picker.index + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        choose(pickerItems[picker.index]);
+        return;
+      }
+    }
+    if (e.key === "Escape") {
+      if (picker) picker = null;
+      else editor.blur();
+      return;
+    }
     if (e.key !== "Tab") return;
     e.preventDefault();
     const { selectionStart: s, selectionEnd: end } = editor;
@@ -313,15 +391,38 @@
       {#if dirOf(current)}<div class="crumb">{dirOf(current)}</div>{/if}
 
       {#if mode === "edit"}
-        <textarea
-          bind:this={editor}
-          bind:value={content}
-          on:input={scheduleSave}
-          on:keydown={onEditorKey}
-          on:blur={stopEditing}
-          spellcheck="false"
-          placeholder="Write markdown here. Link another note with [[Note name]]."
-        />
+        <div class="editor-wrap">
+          <textarea
+            bind:this={editor}
+            bind:value={content}
+            on:input={() => {
+              scheduleSave();
+              updatePicker(true);
+            }}
+            on:keydown={onEditorKey}
+            on:keyup={() => updatePicker(false)}
+            on:click={() => updatePicker(false)}
+            on:blur={stopEditing}
+            spellcheck="false"
+            placeholder="Write markdown here. Type / or [[ to link another note."
+          />
+          {#if picker && pickerItems.length}
+            <ul class="picker" style="left: {picker.x}px; top: {picker.y}px">
+              {#each pickerItems as item, i}
+                <!-- mousedown + preventDefault keeps focus in the editor -->
+                <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
+                <li
+                  class:sel={i === picker.index}
+                  on:mousedown|preventDefault={() => choose(item)}
+                  on:mouseenter={() => picker && (picker.index = i)}
+                >
+                  {item.label}
+                  {#if item.hint}<span class="where">{item.hint}</span>{/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
       {:else}
         <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
         <article class="preview" on:click={onPreviewClick}>
@@ -483,6 +584,43 @@
     margin: auto;
     text-align: center;
     color: var(--muted);
+  }
+  .editor-wrap {
+    flex: 1;
+    display: flex;
+    position: relative;
+    min-height: 0;
+  }
+  .editor-wrap textarea {
+    flex: 1;
+  }
+  .picker {
+    position: absolute;
+    width: 280px;
+    margin: 4px 0 0;
+    padding: 4px;
+    list-style: none;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+    font-size: 13px;
+    z-index: 10;
+  }
+  .picker li {
+    padding: 5px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .picker li.sel {
+    background: var(--active);
+  }
+  .picker .where {
+    display: inline;
+    margin-left: 6px;
   }
   .toast {
     position: fixed;
