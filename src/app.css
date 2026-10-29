@@ -8,6 +8,7 @@
   --muted: #6b6b73;
   --accent: #2d5aa8;
   --danger: #c4433a;
+  --code: #a8456b;
   color-scheme: light dark;
 }
 
@@ -22,6 +23,7 @@
     --muted: #9a9aa2;
     --accent: #7aa7ee;
     --danger: #d85a52;
+    --code: #e391b3;
   }
 }
 
