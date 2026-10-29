@@ -194,9 +194,11 @@ pub fn search_notes(state: State<AppState>, query: String) -> Vec<search::Hit> {
     search::search(&root(&state), &query, 200)
 }
 
+/// Async so a big vault doesn't hold up the window while it is read.
 #[tauri::command]
-pub fn note_index(state: State<AppState>) -> Vec<search::NoteInfo> {
-    search::index(&root(&state))
+pub async fn note_index(state: State<'_, AppState>) -> Result<Vec<search::NoteInfo>, String> {
+    let root = root(&state);
+    tauri::async_runtime::spawn_blocking(move || search::index(&root)).await.map_err(|e| e.to_string())
 }
 
 /// UI preferences, kept as an opaque JSON object in the config file.
@@ -258,7 +260,9 @@ fn write(root: &Path, path: &str, content: &str) -> Result<(), String> {
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(p, content).map_err(|e| e.to_string())
+    fs::write(&p, content).map_err(|e| e.to_string())?;
+    search::forget(&p);
+    Ok(())
 }
 
 fn create_note_in(root: &Path, dir: &str, name: &str) -> Result<String, String> {

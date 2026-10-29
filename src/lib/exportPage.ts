@@ -22,6 +22,13 @@ table.properties th { text-align: left; font-weight: 500; color: #6b6b73; }
 img { max-width: 100%; }
 hr { border: none; border-top: 1px solid #e3e3e6; }
 .katex-html { display: none; }
+.tok-keyword { color: #8b3fa8; }
+.tok-string, .tok-string2 { color: #2f7a3d; }
+.tok-comment { color: #8a8a93; font-style: italic; }
+.tok-number, .tok-bool, .tok-atom { color: #b35a00; }
+.tok-typeName, .tok-className, .tok-namespace { color: #1f6f8b; }
+.tok-definition, .tok-macroName { color: #2d5aa8; }
+.tok-propertyName { color: #7a5a00; }
 .math { text-align: center; margin: 12px 0; }
 `;
 

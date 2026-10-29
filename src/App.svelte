@@ -22,6 +22,7 @@
   import type { Update } from "@tauri-apps/plugin-updater";
   import Editor, { type LinkOption } from "./lib/Editor.svelte";
   import { renderDiagrams } from "./lib/diagrams";
+  import { highlightCodeBlocks } from "./lib/codeHighlight";
 
   let vault = "";
   let tree: Entry[] = [];
@@ -88,7 +89,12 @@
     const rel = current && resolveRelative(href, current);
     return rel ? convertFileSrc(`${vault}/${rel}`) : href;
   }
-  $: if (html) tick().then(() => previewEl && renderDiagrams(previewEl, dark));
+  $: if (html)
+    tick().then(() => {
+      if (!previewEl) return;
+      renderDiagrams(previewEl, dark);
+      highlightCodeBlocks(previewEl);
+    });
 
   function flatten(entries: Entry[]): string[] {
     return entries.flatMap((e) => (e.isDir ? flatten(e.children) : [e.path]));
@@ -363,10 +369,41 @@
     await openNote(path, "edit");
   }
 
-  async function startEditing() {
+  /** Switches to editing, with the caret at character `at` of the note if given. */
+  async function startEditing(at?: number) {
     mode = "edit";
     await tick();
-    editor?.focus();
+    if (at === undefined) editor?.focus();
+    else editor?.setCursor(at);
+  }
+
+  /**
+   * Where in the note's text a click in the preview landed. Each preview block
+   * knows its first source line; within it, the text just before the click is
+   * looked up in the source to find the exact spot.
+   */
+  function sourcePosition(e: MouseEvent): number | undefined {
+    const block = (e.target as HTMLElement).closest<HTMLElement>("[data-line]");
+    if (!block) return undefined;
+    const lines = content.split("\n");
+    const line = Math.min(Number(block.dataset.line), lines.length);
+    const lineStart = lines.slice(0, line - 1).join("\n").length + (line > 1 ? 1 : 0);
+    const range = document.caretRangeFromPoint?.(e.clientX, e.clientY);
+    const node = range?.startContainer;
+    if (!range || node?.nodeType !== Node.TEXT_NODE || !block.contains(node)) return lineStart;
+    const text = node.textContent ?? "";
+    const before = text.slice(Math.max(0, range.startOffset - 16), range.startOffset);
+    const after = text.slice(range.startOffset, range.startOffset + 16);
+    // Rendered text drops markdown syntax, so search the source from this block onwards.
+    if (before.trim()) {
+      const i = content.indexOf(before, lineStart);
+      if (i !== -1) return i + before.length;
+    }
+    if (after.trim()) {
+      const i = content.indexOf(after, lineStart);
+      if (i !== -1) return i;
+    }
+    return lineStart;
   }
 
   function stopEditing() {
@@ -377,8 +414,8 @@
   function onPreviewClick(e: MouseEvent) {
     const a = (e.target as HTMLElement).closest("a");
     if (!a) {
-      // Clicking the text (but not selecting it) starts editing.
-      if (!window.getSelection()?.toString()) startEditing();
+      // Clicking the text (but not selecting it) starts editing there.
+      if (!window.getSelection()?.toString()) startEditing(sourcePosition(e));
       return;
     }
     e.preventDefault();
@@ -568,6 +605,7 @@
     document.body.appendChild(scratch);
     try {
       await renderDiagrams(scratch, false);
+      await highlightCodeBlocks(scratch);
       // Links to other notes can't work outside the app; keep their text.
       scratch.querySelectorAll("a.wikilink, a.tag").forEach((a) => a.replaceWith(...a.childNodes));
       const saved = await run(() => api.exportHtml(nameOf(note), exportPage(nameOf(note), scratch.innerHTML)));

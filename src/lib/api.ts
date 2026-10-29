@@ -16,7 +16,8 @@ export interface Hit {
 
 export interface NoteInfo {
   path: string;
-  links: { target: string; line: number; text: string }[];
+  /** `[[wiki]]` targets as written, or markdown link paths relative to the note. */
+  links: { target: string; line: number; text: string; kind: "wiki" | "md" }[];
   /** Lowercase, without "#". */
   tags: string[];
 }

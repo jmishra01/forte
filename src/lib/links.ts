@@ -1,14 +1,21 @@
 import { nameOf, type Hit, type NoteInfo } from "./api";
-import { resolveLink } from "./markdown";
+import { relativeHref, resolveLink, resolveRelative } from "./markdown";
 
-/** Lines in other notes whose `[[links]]` point at `path`. */
+/** The note a link from `from` points at, if it exists. */
+export function linkTarget(l: NoteInfo["links"][number], from: string, notes: string[]): string | null {
+  if (l.kind === "wiki") return resolveLink(l.target, from, notes);
+  const rel = resolveRelative(l.target, from);
+  return rel && notes.includes(rel) ? rel : null;
+}
+
+/** Lines in other notes whose links point at `path`. */
 export function backlinks(path: string, index: NoteInfo[], notes: string[]): Hit[] {
   const out: Hit[] = [];
   for (const note of index) {
     if (note.path === path) continue;
     const seen = new Set<number>();
     for (const l of note.links) {
-      if (seen.has(l.line) || resolveLink(l.target, note.path, notes) !== path) continue;
+      if (seen.has(l.line) || linkTarget(l, note.path, notes) !== path) continue;
       seen.add(l.line);
       out.push({ path: note.path, line: l.line, text: l.text });
     }
@@ -24,6 +31,9 @@ export function linkFor(path: string, notes: string[]) {
 
 /** Same pattern as the preview's wikilink tokenizer. */
 const WIKILINK = /\[\[([^[\]|]+)(\|[^[\]]+)?\]\]/g;
+
+/** `](path.md#part)` or `](<path.md#part>)`, as the Rust index reads them. */
+const MDLINK = /\]\((?:<([^>]+\.md)(#[^>]*)?>|([^()\s<>]+?\.md)(#[^()\s<>]*)?)(?=[\s)])/gi;
 
 /**
  * After notes were renamed or moved (`moved` maps old path -> new path),
@@ -49,7 +59,18 @@ export function rewriteLinks(
       changed = true;
       return `[[${linkFor(newTarget, newNotes)}${heading}${label}]]`;
     });
-    if (changed) out.set(newSource, updated);
+    // Markdown links are relative to the note, so they can break when either end moves.
+    const final = updated.replace(MDLINK, (whole, angled, angledPart = "", plain, plainPart = "") => {
+      const written: string = angled ?? plain;
+      const oldTarget = resolveRelative(written, oldSource);
+      if (!oldTarget || !oldNotes.includes(oldTarget)) return whole;
+      const newTarget = moved.get(oldTarget) ?? oldTarget;
+      if (resolveRelative(written, newSource) === newTarget) return whole;
+      changed = true;
+      const href = relativeHref(newTarget, newSource);
+      return angled ? `](<${decodeURIComponent(href)}${angledPart}>` : `](${href}${plainPart}`;
+    });
+    if (changed) out.set(newSource, final);
   }
   return out;
 }
