@@ -10,8 +10,10 @@ export interface Settings {
   showOutline: boolean;
   /** AI help (summaries, link suggestions, questions) with the person's own API key. Off until turned on. */
   aiEnabled: boolean;
-  /** Commit, pull and push the vault every few minutes when it is a Git repository. */
+  /** Sync every few minutes: Git (when the vault is a repository) and encrypted sync (when set up). */
   gitAutoSync: boolean;
+  /** Plugins approved on this computer: id -> SHA-256 of the code that was approved. */
+  plugins: Record<string, string>;
 }
 
 export const defaults: Settings = {
@@ -24,13 +26,14 @@ export const defaults: Settings = {
   showOutline: true,
   aiEnabled: false,
   gitAutoSync: false,
+  plugins: {},
 };
 
 /** Stored settings over the defaults, ignoring unknown keys and wrong types. */
 export function withDefaults(stored: Record<string, unknown> | null): Settings {
   const out = { ...defaults } as Record<string, unknown>;
   for (const [k, v] of Object.entries(stored ?? {})) {
-    if (k in defaults && typeof v === typeof (defaults as unknown as Record<string, unknown>)[k]) out[k] = v;
+    if (k in defaults && v !== null && typeof v === typeof (defaults as unknown as Record<string, unknown>)[k]) out[k] = v;
   }
   return out as unknown as Settings;
 }

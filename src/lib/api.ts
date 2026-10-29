@@ -55,6 +55,16 @@ export type AiEvent =
 
 export type AiTask = "summarize" | "links" | "ask";
 
+export interface EncSyncSummary {
+  sent: number;
+  received: number;
+  deleted: number;
+  /** Notes changed on both sides; the other version was saved next to each. */
+  conflicts: string[];
+  /** Files in the sync folder that couldn't be decrypted. */
+  unreadable: number;
+}
+
 export const api = {
   getVault: () => invoke<string>("get_vault"),
   setVault: (path: string) => invoke<void>("set_vault", { path }),
@@ -87,6 +97,12 @@ export const api = {
   gitStatus: () => invoke<GitStatus>("git_status"),
   gitSync: (message: string) => invoke<GitStatus>("git_sync", { message }),
   gitInit: () => invoke<GitStatus>("git_init"),
+  encSyncStatus: () => invoke<{ remote: string | null }>("enc_sync_status"),
+  encSyncProbe: (remote: string) => invoke<"new" | "existing" | "other">("enc_sync_probe", { remote }),
+  /** Connects to (or creates) an encrypted sync folder; the passphrase goes to the keychain. */
+  encSyncConnect: (remote: string, passphrase: string) => invoke<void>("enc_sync_connect", { remote, passphrase }),
+  encSyncDisconnect: () => invoke<void>("enc_sync_disconnect"),
+  encSyncRun: () => invoke<EncSyncSummary>("enc_sync_run"),
   aiHasKey: () => invoke<boolean>("ai_has_key"),
   /** Stores the key in the OS keychain; it is never read back into the page. */
   aiSetKey: (key: string) => invoke<void>("ai_set_key", { key }),

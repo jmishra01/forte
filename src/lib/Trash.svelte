@@ -3,6 +3,7 @@
   import { ask } from "@tauri-apps/plugin-dialog";
   import { api, type TrashItem } from "./api";
   import { Folder, Note } from "./icons";
+  import { trapFocus } from "./trapFocus";
 
   const dispatch = createEventDispatcher<{ restored: string; error: string; close: void }>();
   let items: TrashItem[] = [];
@@ -74,7 +75,7 @@
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div class="backdrop" on:mousedown|self={() => dispatch("close")} on:keydown={(e) => e.key === "Escape" && dispatch("close")}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-label="Trash">
+  <div class="dialog" role="dialog" aria-modal="true" use:trapFocus aria-label="Trash">
     <header>
       <h2>Trash</h2>
       {#if items.length}<button class="danger" on:click={emptyAll}>Empty trash</button>{/if}

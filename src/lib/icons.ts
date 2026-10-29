@@ -15,6 +15,7 @@ export { default as Vault } from "lucide-svelte/icons/folder-open";
 export { default as Folder } from "lucide-svelte/icons/folder";
 export { default as Note } from "lucide-svelte/icons/file-text";
 export { default as Sync } from "lucide-svelte/icons/refresh-cw";
+export { default as EncryptedSync } from "lucide-svelte/icons/cloud";
 export { default as Ai } from "lucide-svelte/icons/sparkles";
 export { default as Trash } from "lucide-svelte/icons/trash-2";
 export { default as Settings } from "lucide-svelte/icons/settings";

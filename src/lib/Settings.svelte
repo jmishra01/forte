@@ -1,13 +1,63 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from "svelte";
   import { api } from "./api";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import type { Settings } from "./settings";
+  import { PERMISSION_TEXT, type PluginInfo } from "./plugins";
+  import { trapFocus } from "./trapFocus";
 
   export let settings: Settings;
   /** Whether an API key is in the keychain. */
   export let hasKey = false;
+  /** Plugins found in the vault's .forte/plugins folder. */
+  export let plugins: PluginInfo[] = [];
+  /** The encrypted sync folder for this vault, if set up. */
+  export let encRemote: string | null = null;
 
-  const dispatch = createEventDispatcher<{ change: Settings; keyChanged: boolean; close: void }>();
+  let syncFolder = "";
+  let passphrase = "";
+  let passphraseAgain = "";
+  let syncError = "";
+  let connecting = false;
+  /** What the chosen folder is: new (type the passphrase twice), or already a Forte sync folder. */
+  let folderKind: "new" | "existing" | "other" | null = null;
+
+  async function chooseSyncFolder() {
+    const dir = await openDialog({ directory: true });
+    if (typeof dir !== "string") return;
+    syncFolder = dir;
+    syncError = "";
+    folderKind = await api.encSyncProbe(dir).catch(() => null);
+    if (folderKind === "other") syncError = "That folder has other files in it. Choose an empty folder, or one Forte already syncs to.";
+  }
+
+  async function connectSync() {
+    syncError = "";
+    if (folderKind === "new" && passphrase !== passphraseAgain) return (syncError = "The passphrases don't match.");
+    connecting = true;
+    try {
+      await api.encSyncConnect(syncFolder, passphrase);
+      passphrase = passphraseAgain = "";
+      dispatch("encSyncChanged", syncFolder);
+    } catch (e) {
+      syncError = String(e);
+    }
+    connecting = false;
+  }
+
+  async function disconnectSync() {
+    await api.encSyncDisconnect().catch((e) => (syncError = String(e)));
+    dispatch("encSyncChanged", null);
+  }
+
+  const dispatch = createEventDispatcher<{
+    change: Settings;
+    keyChanged: boolean;
+    togglePlugin: { plugin: PluginInfo; on: boolean };
+    reloadPlugins: void;
+    encSyncChanged: string | null;
+    close: void;
+  }>();
   let dialog: HTMLElement;
   let keyInput = "";
   let keyError = "";
@@ -49,7 +99,7 @@
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div class="backdrop" on:mousedown|self={() => dispatch("close")} on:keydown={(e) => e.key === "Escape" && dispatch("close")}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-label="Settings" bind:this={dialog}>
+  <div class="dialog" role="dialog" aria-modal="true" use:trapFocus aria-label="Settings" bind:this={dialog}>
     <h2>Settings</h2>
 
     <label>
@@ -110,9 +160,46 @@
     <h3>Sync</h3>
     <label class="check">
       <input type="checkbox" checked={settings.gitAutoSync} on:change={(e) => set("gitAutoSync", e.currentTarget.checked)} />
-      <span>Sync with Git every 5 minutes</span>
+      <span>Sync automatically every 5 minutes</span>
     </label>
-    <p class="hint">Only when the notes folder is a Git repository. Uses your computer's own Git login.</p>
+    <p class="hint">Git sync runs when the notes folder is a Git repository, using your computer's own Git login.</p>
+
+    <h3>Encrypted sync</h3>
+    {#if encRemote}
+      <p class="hint">Syncing through <code>{encRemote}</code>. Everything there is encrypted with your passphrase.</p>
+      <div class="key"><span /><button class="link" on:click={disconnectSync}>Stop encrypted sync</button></div>
+    {:else}
+      <p class="hint">
+        Keep your notes in step between computers through a folder that is already synced, like iCloud Drive or Dropbox.
+        The folder only ever holds encrypted files, so that service can't read your notes.
+      </p>
+      <div class="key">
+        <span class="path">{syncFolder || "No folder chosen"}</span>
+        <button on:click={chooseSyncFolder}>Choose folder…</button>
+      </div>
+      {#if syncFolder && (folderKind === "new" || folderKind === "existing")}
+        <form on:submit|preventDefault={connectSync}>
+          {#if folderKind === "existing"}
+            <p class="hint">This folder already has encrypted notes. Enter the passphrase you chose for it.</p>
+          {/if}
+          <input
+            type="password"
+            bind:value={passphrase}
+            placeholder={folderKind === "new" ? "Choose a passphrase (at least 8 characters)" : "Passphrase"}
+            autocomplete={folderKind === "new" ? "new-password" : "current-password"}
+          />
+          {#if folderKind === "new"}
+            <input type="password" bind:value={passphraseAgain} placeholder="Passphrase again" autocomplete="new-password" />
+          {/if}
+          <button type="submit" disabled={connecting || passphrase.length < 8}>{connecting ? "Checking…" : "Start encrypted sync"}</button>
+        </form>
+        <p class="hint">
+          Use the same passphrase on every computer. If you forget it, the encrypted copy can't be opened by anyone,
+          including you (your notes on this computer are unaffected).
+        </p>
+      {/if}
+    {/if}
+    {#if syncError}<p class="error">{syncError}</p>{/if}
 
     <h3>AI help</h3>
     <label class="check">
@@ -137,6 +224,37 @@
         notes that best match) is sent to Anthropic only when you ask for help.
       </p>
     {/if}
+
+    <h3>Plugins</h3>
+    {#each plugins as p (p.id)}
+      {@const approved = settings.plugins[p.id]}
+      <div class="plugin">
+        <label class="check">
+          <input
+            type="checkbox"
+            checked={approved === p.hash && !p.error}
+            disabled={!!p.error}
+            on:change={(e) => dispatch("togglePlugin", { plugin: p, on: e.currentTarget.checked })}
+          />
+          <span><strong>{p.name}</strong>{#if p.version} <span class="muted">{p.version}</span>{/if}</span>
+        </label>
+        {#if p.description}<p class="hint">{p.description}</p>{/if}
+        {#if p.error}
+          <p class="error">Can't load: {p.error}</p>
+        {:else}
+          <p class="hint">
+            {p.permissions.length ? "Can: " + p.permissions.map((x) => PERMISSION_TEXT[x]).join("; ") : "Can only add commands"}
+          </p>
+          {#if approved && approved !== p.hash}<p class="error">Changed since you turned it on. Turn it on again to approve this version.</p>{/if}
+        {/if}
+      </div>
+    {:else}
+      <p class="hint">No plugins. Put them in <code>.forte/plugins</code> in your notes folder.</p>
+    {/each}
+    <p class="hint">
+      Plugins run separately from your notes and can't use the internet. Only turn on plugins you trust.
+      <button class="link-btn" on:click={() => dispatch("reloadPlugins")}>Look for plugins again</button>
+    </p>
 
     <div class="actions"><button on:click={() => dispatch("close")}>Done</button></div>
   </div>
@@ -223,6 +341,48 @@
   .error {
     color: var(--danger);
     margin: 4px 0;
+  }
+  .plugin {
+    margin: 8px 0 10px;
+  }
+  form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 6px 0;
+  }
+  form input {
+    width: 100% !important;
+  }
+  form button {
+    align-self: flex-end;
+    padding: 5px 12px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+  }
+  .path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+  .plugin label {
+    margin: 0;
+  }
+  .muted {
+    color: var(--muted);
+    font-weight: normal;
+  }
+  .link-btn {
+    border: none;
+    background: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
   }
   .hint {
     margin: 4px 0 0;

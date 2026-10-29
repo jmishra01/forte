@@ -125,11 +125,6 @@ fn read_tree(root: &Path, dir: &Path) -> Vec<Entry> {
     out
 }
 
-/// Lets the preview load images from the vault (and only the vault) over the asset protocol.
-pub fn allow_assets(app: &AppHandle, root: &Path) {
-    let _ = app.asset_protocol_scope().allow_directory(root, true);
-}
-
 #[tauri::command]
 pub fn get_vault(state: State<AppState>) -> String {
     root(&state).to_string_lossy().into_owned()
@@ -142,7 +137,6 @@ pub fn set_vault(app: AppHandle, state: State<AppState>, path: String) -> Result
     let mut cfg = Config::load(&state.config_path);
     cfg.vault = Some(path.clone());
     cfg.save(&state.config_path)?;
-    allow_assets(&app, &path);
     *state.watcher.lock().unwrap() = watch::start(app, &path);
     *state.root.lock().unwrap() = path;
     Ok(())
@@ -190,8 +184,9 @@ pub fn delete_entry(state: State<AppState>, path: String) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn search_notes(state: State<AppState>, query: String) -> Vec<search::Hit> {
-    search::search(&root(&state), &query, 200)
+pub async fn search_notes(state: State<'_, AppState>, query: String) -> Result<Vec<search::Hit>, String> {
+    let root = root(&state);
+    tauri::async_runtime::spawn_blocking(move || search::search(&root, &query, 200)).await.map_err(|e| e.to_string())
 }
 
 /// Async so a big vault doesn't hold up the window while it is read.
@@ -364,7 +359,7 @@ fn data_url(root: &Path, rel: &str) -> Option<String> {
     Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

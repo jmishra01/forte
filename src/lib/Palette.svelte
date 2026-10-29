@@ -6,6 +6,8 @@
 <script lang="ts">
   import { createEventDispatcher, onMount, tick } from "svelte";
   import { api, dirOf, nameOf, type Hit } from "./api";
+  import { highlight, parseQuery } from "./query";
+  import { trapFocus } from "./trapFocus";
 
   /** All note paths, for matching by name. */
   export let notes: string[];
@@ -27,19 +29,23 @@
   $: commandMode = query.startsWith(">");
   $: q = (commandMode ? query.slice(1) : query).trim().toLowerCase();
   $: matchingCommands = commandMode ? commands.filter((c) => c.label.toLowerCase().includes(q)) : [];
-  // Name matches first (prefix matches before others), then lines that contain the text.
-  $: byName = q
-    ? notes
-        .filter((p) => nameOf(p).toLowerCase().includes(q))
-        .sort((a, b) => rank(a) - rank(b) || nameOf(a).localeCompare(nameOf(b)))
-        .slice(0, 20)
-    : notes.slice(0, 20);
+  $: parsed = parseQuery(q);
+  // Notes whose names have every word (prefix matches first), then matching lines.
+  // Filters only make sense for content search, so names are left out then.
+  $: byName = !q
+    ? notes.slice(0, 20)
+    : parsed.filtered || !parsed.words.length
+      ? []
+      : notes
+          .filter((p) => parsed.words.every((w) => nameOf(p).toLowerCase().includes(w)))
+          .sort((a, b) => rank(a) - rank(b) || nameOf(a).localeCompare(nameOf(b)))
+          .slice(0, 20);
   $: items = commandMode ? [] : ([...byName.map((path): Item => ({ path })), ...hits] as Item[]);
   $: count = commandMode ? matchingCommands.length : items.length;
   $: if (index >= count) index = Math.max(0, count - 1);
   $: search(commandMode ? "" : q);
 
-  const rank = (p: string) => (nameOf(p).toLowerCase().startsWith(q) ? 0 : 1);
+  const rank = (p: string) => (nameOf(p).toLowerCase().startsWith(parsed.words[0] ?? "") ? 0 : 1);
 
   function search(q: string) {
     clearTimeout(searchTimer);
@@ -80,21 +86,6 @@
     }
   }
 
-  /** `text` split around case-insensitive matches of `q`, for highlighting. */
-  function parts(text: string, q: string) {
-    if (!q) return [{ text, match: false }];
-    const out: { text: string; match: boolean }[] = [];
-    const lower = text.toLowerCase();
-    let i = 0;
-    for (let j = lower.indexOf(q); j !== -1; j = lower.indexOf(q, j + q.length)) {
-      if (j > i) out.push({ text: text.slice(i, j), match: false });
-      out.push({ text: text.slice(j, j + q.length), match: true });
-      i = j + q.length;
-    }
-    if (i < text.length) out.push({ text: text.slice(i), match: false });
-    return out;
-  }
-
   onMount(() => {
     input.focus();
     input.setSelectionRange(query.length, query.length);
@@ -103,7 +94,7 @@
 
 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
 <div class="backdrop" on:mousedown|self={() => dispatch("close")}>
-  <div class="palette" role="dialog" aria-modal="true" aria-label="Search notes">
+  <div class="palette" role="dialog" aria-modal="true" use:trapFocus aria-label="Search notes">
     <input
       bind:this={input}
       bind:value={query}
@@ -122,7 +113,7 @@
             on:mousemove={() => (index = i)}
             on:click={() => dispatch("run", cmd)}
           >
-            <span class="name">{#each parts(cmd.label, q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}</span>
+            <span class="name">{#each highlight(cmd.label, [q]) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}</span>
             {#if cmd.hint}<span class="where">{cmd.hint}</span>{/if}
           </li>
         {:else}
@@ -139,17 +130,20 @@
             on:click={() => dispatch("choose", item)}
           >
             <span class="name">
-              {#each parts(nameOf(item.path), item.line ? "" : q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
+              {#each highlight(nameOf(item.path), item.line ? [] : parsed.words) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
             </span>
             {#if dirOf(item.path)}<span class="where">{dirOf(item.path)}</span>{/if}
             {#if item.text}
               <span class="text">
-                {#each parts(item.text, q) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
+                {#each highlight(item.text, parsed.words) as p}{#if p.match}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}
               </span>
             {/if}
           </li>
         {:else}
-          <li class="none">No matches</li>
+          <li class="none">
+            No matches. Try fewer words, or <code>tag:name</code>, <code>in:folder</code>, <code>"exact phrase"</code>,
+            <code>-word</code>.
+          </li>
         {/each}
       {/if}
     </ul>
