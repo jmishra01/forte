@@ -91,6 +91,22 @@ button {
   border: 1px solid var(--border);
   padding: 4px 10px;
 }
+.preview pre.diagram {
+  background: none;
+  padding: 8px 0;
+  white-space: normal;
+  text-align: center;
+}
+.preview pre.diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.preview .diagram-error {
+  margin-top: 8px;
+  color: var(--danger);
+  font-family: inherit;
+  white-space: pre-wrap;
+}
 .preview img {
   max-width: 100%;
 }

@@ -6,6 +6,7 @@
   import { renderMarkdown, resolveLink } from "./lib/markdown";
   import Tree from "./lib/Tree.svelte";
   import { caretCoords } from "./lib/caret";
+  import { renderDiagrams } from "./lib/diagrams";
 
   let vault = "";
   let tree: Entry[] = [];
@@ -19,6 +20,7 @@
   let error = "";
   let rootDrop = false;
   let editor: HTMLTextAreaElement;
+  let previewEl: HTMLElement;
   let titleInput: HTMLInputElement;
 
   $: notes = flatten(tree);
@@ -26,6 +28,7 @@
     ? notes.filter((p) => nameOf(p).toLowerCase().includes(filter.trim().toLowerCase()))
     : [];
   $: html = current && mode === "preview" ? renderMarkdown(content, (t: string) => resolveLink(t, current!, notes)) : "";
+  $: if (html) tick().then(() => previewEl && renderDiagrams(previewEl));
 
   function flatten(entries: Entry[]): string[] {
     return entries.flatMap((e) => (e.isDir ? flatten(e.children) : [e.path]));
@@ -425,7 +428,7 @@
         </div>
       {:else}
         <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-noninteractive-element-interactions -->
-        <article class="preview" on:click={onPreviewClick}>
+        <article class="preview" bind:this={previewEl} on:click={onPreviewClick}>
           {@html html}
         </article>
       {/if}
