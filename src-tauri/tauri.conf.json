@@ -51,6 +51,8 @@
   },
   "bundle": {
     "active": true,
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 Jitendra Mishra",
     "targets": "all",
     "icon": [
       "icons/32x32.png",
