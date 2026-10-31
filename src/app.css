@@ -251,3 +251,13 @@ button {
 input.title:focus-visible {
   outline: none;
 }
+
+/* Task lists: the checkbox is the marker, so no bullet as well. */
+.preview li:has(> input[type="checkbox"]:first-child) {
+  list-style: none;
+  margin-left: -1.3em;
+}
+.preview li > input[type="checkbox"]:first-child {
+  margin: 0 0.45em 0 0;
+  vertical-align: -1px;
+}

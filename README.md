@@ -4,6 +4,13 @@
 
 <p align="center">Fast, private Markdown notes that are plain files on your computer.</p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/forte-dark.png">
+    <img src="docs/images/forte-light.png" alt="Forte showing a project roadmap note with tags, a task list, a diagram, an outline and backlinks" width="900">
+  </picture>
+</p>
+
 **Forte is free for everyone.** No account, no subscription, no paid tier, and
 no ads. It's open source under the [MIT licence](LICENSE).
 
